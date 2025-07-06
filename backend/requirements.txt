@@ -1,0 +1,56 @@
+# Core FastAPI dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# Database and Vector Storage
+chromadb==0.4.18
+sqlite3  # Built into Python
+
+# LLM Integration
+ollama==0.1.7
+requests==2.31.0
+
+# Image and Video Processing
+Pillow==10.1.0
+opencv-python==4.8.1.78
+ffmpeg-python==0.2.0
+
+# Data Processing
+numpy==1.24.4
+pandas==2.1.4
+
+# Configuration and Environment
+pydantic==2.5.0
+pydantic-settings==2.1.0
+python-dotenv==1.0.0
+
+# Async and Concurrency
+asyncio  # Built into Python
+aiofiles==23.2.1
+httpx==0.25.2
+
+# Utilities
+pathlib  # Built into Python
+hashlib  # Built into Python
+json  # Built into Python
+logging  # Built into Python
+typing  # Built into Python
+
+# Development and Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+black==23.11.0
+mypy==1.7.1
+flake8==6.1.0
+
+# CORS and Security
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.6
+
+# File System Monitoring
+watchdog==3.0.0
+
+# Performance and Monitoring
+psutil==5.9.6
