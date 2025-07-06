@@ -442,13 +442,243 @@ class MediaService:
     async def _generate_video_thumbnail(self, file_path: str, thumbnail_path: str, size: int) -> bool:
         """Generate thumbnail for a video file."""
         try:
-            # For now, return False - video thumbnail generation would require ffmpeg
-            # In a full implementation, this would extract a frame from the video
-            logger.warning(f"Video thumbnail generation not implemented: {file_path}")
-            return False
-            
+            import cv2
+            import asyncio
+
+            def extract_frame():
+                # Open video file
+                cap = cv2.VideoCapture(file_path)
+                if not cap.isOpened():
+                    logger.error(f"Could not open video file: {file_path}")
+                    return False
+
+                try:
+                    # Get video properties
+                    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                    fps = cap.get(cv2.CAP_PROP_FPS)
+
+                    if total_frames <= 0 or fps <= 0:
+                        logger.error(f"Invalid video properties: frames={total_frames}, fps={fps}")
+                        return False
+
+                    # Extract frame at 10% of video duration
+                    target_frame = int(total_frames * 0.1)
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+
+                    ret, frame = cap.read()
+                    if not ret or frame is None:
+                        # Fallback to first frame
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        ret, frame = cap.read()
+                        if not ret or frame is None:
+                            logger.error(f"Could not read frame from video: {file_path}")
+                            return False
+
+                    # Resize frame to thumbnail size
+                    height, width = frame.shape[:2]
+                    aspect_ratio = width / height
+
+                    if aspect_ratio > 1:  # Landscape
+                        new_width = size
+                        new_height = int(size / aspect_ratio)
+                    else:  # Portrait or square
+                        new_height = size
+                        new_width = int(size * aspect_ratio)
+
+                    resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
+
+                    # Save thumbnail
+                    success = cv2.imwrite(thumbnail_path, resized_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    if not success:
+                        logger.error(f"Failed to save thumbnail: {thumbnail_path}")
+                        return False
+
+                    logger.info(f"Generated video thumbnail: {thumbnail_path}")
+                    return True
+
+                finally:
+                    cap.release()
+
+            # Run in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, extract_frame)
+
         except Exception as e:
             logger.error(f"Failed to generate video thumbnail: {e}")
+            return False
+
+    async def get_video_frames(self, file_id: str, frame_count: int = 5, size: int = 300) -> List[str]:
+        """
+        Get multiple preview frames from a video file.
+
+        Args:
+            file_id: Unique identifier for the video file
+            frame_count: Number of frames to extract
+            size: Frame size in pixels
+
+        Returns:
+            List of paths to frame files
+        """
+        try:
+            # Get original file path
+            file_path = await self.get_file_path(file_id)
+            if not file_path:
+                return []
+
+            # Check if it's a video file
+            file_ext = Path(file_path).suffix.lower()
+            if file_ext not in settings.SUPPORTED_VIDEO_FORMATS:
+                return []
+
+            # Generate frame paths
+            frame_paths = []
+            for i in range(frame_count):
+                frame_filename = f"{file_id}_frame_{i}_{size}.jpg"
+                frame_path = self.thumbnail_dir / frame_filename
+                frame_paths.append(str(frame_path))
+
+            # Check if frames already exist
+            if all(Path(path).exists() for path in frame_paths):
+                return frame_paths
+
+            # Generate frames
+            success = await self._generate_video_frames(file_path, frame_paths, frame_count, size)
+            if success:
+                return frame_paths
+            else:
+                return []
+
+        except Exception as e:
+            logger.error(f"Failed to get video frames for {file_id}: {e}")
+            return []
+
+    async def _generate_video_frames(self, file_path: str, frame_paths: List[str], frame_count: int, size: int) -> bool:
+        """Generate multiple preview frames from a video file."""
+        try:
+            import cv2
+            import asyncio
+
+            def extract_frames():
+                # Open video file
+                cap = cv2.VideoCapture(file_path)
+                if not cap.isOpened():
+                    logger.error(f"Could not open video file: {file_path}")
+                    return False
+
+                try:
+                    # Get video properties
+                    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                    fps = cap.get(cv2.CAP_PROP_FPS)
+
+                    if total_frames <= 0 or fps <= 0:
+                        logger.error(f"Invalid video properties: frames={total_frames}, fps={fps}")
+                        return False
+
+                    # Calculate frame positions (evenly distributed)
+                    frame_positions = []
+                    for i in range(frame_count):
+                        # Extract frames at 20%, 40%, 60%, 80%, etc. of video duration
+                        position = (i + 1) * 0.2
+                        if position > 0.9:  # Don't go too close to the end
+                            position = 0.9
+                        frame_positions.append(int(total_frames * position))
+
+                    # Extract and save frames
+                    for i, frame_pos in enumerate(frame_positions):
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_pos)
+                        ret, frame = cap.read()
+
+                        if not ret or frame is None:
+                            logger.warning(f"Could not read frame at position {frame_pos}")
+                            continue
+
+                        # Resize frame
+                        height, width = frame.shape[:2]
+                        aspect_ratio = width / height
+
+                        if aspect_ratio > 1:  # Landscape
+                            new_width = size
+                            new_height = int(size / aspect_ratio)
+                        else:  # Portrait or square
+                            new_height = size
+                            new_width = int(size * aspect_ratio)
+
+                        resized_frame = cv2.resize(frame, (new_width, new_height), interpolation=cv2.INTER_AREA)
+
+                        # Save frame
+                        success = cv2.imwrite(frame_paths[i], resized_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                        if not success:
+                            logger.error(f"Failed to save frame: {frame_paths[i]}")
+                            return False
+
+                    logger.info(f"Generated {frame_count} video frames for: {file_path}")
+                    return True
+
+                finally:
+                    cap.release()
+
+            # Run in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, extract_frames)
+
+        except Exception as e:
+            logger.error(f"Failed to generate video frames: {e}")
+            return False
+
+    async def open_file_in_explorer(self, file_id: str) -> bool:
+        """
+        Open a file in the system's default file explorer.
+
+        Args:
+            file_id: Unique identifier for the file
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            import subprocess
+            import platform
+            import asyncio
+
+            # Get file path
+            file_path = await self.get_file_path(file_id)
+            if not file_path or not Path(file_path).exists():
+                logger.error(f"File not found: {file_id}")
+                return False
+
+            def open_explorer():
+                system = platform.system()
+                try:
+                    if system == "Windows":
+                        # Windows: Use explorer with /select flag
+                        subprocess.run(["explorer", "/select,", file_path], check=True)
+                    elif system == "Darwin":  # macOS
+                        # macOS: Use open with -R flag to reveal in Finder
+                        subprocess.run(["open", "-R", file_path], check=True)
+                    elif system == "Linux":
+                        # Linux: Open directory containing the file
+                        directory = str(Path(file_path).parent)
+                        subprocess.run(["xdg-open", directory], check=True)
+                    else:
+                        logger.error(f"Unsupported operating system: {system}")
+                        return False
+
+                    logger.info(f"Opened file in explorer: {file_path}")
+                    return True
+
+                except subprocess.CalledProcessError as e:
+                    logger.error(f"Failed to open file in explorer: {e}")
+                    return False
+                except FileNotFoundError as e:
+                    logger.error(f"Explorer command not found: {e}")
+                    return False
+
+            # Run in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, open_explorer)
+
+        except Exception as e:
+            logger.error(f"Failed to open file in explorer: {e}")
             return False
     
     async def _delete_thumbnails(self, file_id: str) -> None:

@@ -6,7 +6,7 @@ from typing import List, Dict, Any, Optional
 import logging
 import asyncio
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import os
 
@@ -57,7 +57,7 @@ class IndexingService:
             self.current_job = {
                 "job_id": job_id,
                 "status": IndexingStatus.SCANNING,
-                "started_at": datetime.utcnow(),
+                "started_at": datetime.now(timezone.utc),
                 "request": request,
                 "progress": IndexingProgress(
                     total_files=0,
@@ -375,7 +375,7 @@ class IndexingService:
             
             # Complete job
             job["status"] = IndexingStatus.COMPLETED
-            job["completed_at"] = datetime.utcnow()
+            job["completed_at"] = datetime.now(timezone.utc)
             
             logger.info(f"Indexing job completed: {job['job_id']}")
             
@@ -386,29 +386,46 @@ class IndexingService:
     
     def _discover_files(self, path: str, recursive: bool) -> List[str]:
         """
-        Discover media files in a directory.
-        
+        Discover media files from a path (directory or individual file).
+
         Args:
-            path: Directory path to scan
-            recursive: Whether to scan recursively
-            
+            path: Directory path to scan or individual file path
+            recursive: Whether to scan directories recursively (ignored for individual files)
+
         Returns:
             List of file paths
         """
         files = []
         path_obj = Path(path)
-        
-        if not path_obj.exists() or not path_obj.is_dir():
+
+        if not path_obj.exists():
+            logger.warning(f"Path does not exist: {path}")
             return files
-        
-        pattern = "**/*" if recursive else "*"
-        
-        for file_path in path_obj.glob(pattern):
-            if file_path.is_file():
-                suffix = file_path.suffix.lower()
-                if suffix in settings.all_supported_formats:
-                    files.append(str(file_path))
-        
+
+        # Handle individual files
+        if path_obj.is_file():
+            suffix = path_obj.suffix.lower()
+            if suffix in settings.all_supported_formats:
+                files.append(str(path_obj))
+                logger.debug(f"Added individual file: {path}")
+            else:
+                logger.warning(f"Unsupported file format: {suffix} for file: {path}")
+            return files
+
+        # Handle directories
+        if path_obj.is_dir():
+            pattern = "**/*" if recursive else "*"
+
+            for file_path in path_obj.glob(pattern):
+                if file_path.is_file():
+                    suffix = file_path.suffix.lower()
+                    if suffix in settings.all_supported_formats:
+                        files.append(str(file_path))
+
+            logger.debug(f"Found {len(files)} files in directory: {path}")
+            return files
+
+        logger.warning(f"Path is neither a file nor directory: {path}")
         return files
     
     def _filter_files(self, files: List[str], request: IndexingRequest) -> List[str]:
@@ -450,19 +467,134 @@ class IndexingService:
     
     async def _process_file_batch(self, files: List[str]) -> None:
         """
-        Process a batch of files.
-        
+        Process a batch of files with AI analysis and vector storage.
+
         Args:
             files: List of file paths to process
         """
-        # For now, just log the files that would be processed
-        # In a full implementation, this would:
-        # 1. Analyze each file with LLM
-        # 2. Generate embeddings
-        # 3. Store in vector database
-        
+        from app.services.llm_service import LLMService
+        from app.database.vector_db import VectorDatabase
+        from app.models.media import MediaMetadata, MediaType
+        import os
+        from datetime import datetime
+        from PIL import Image
+        import hashlib
+
+        llm_service = LLMService()
+        vector_db = VectorDatabase()
+
         for file_path in files:
-            logger.debug(f"Would process file: {file_path}")
-            
-            if self.current_job:
-                self.current_job["progress"].successful_files += 1
+            try:
+                logger.info(f"Processing file: {file_path}")
+
+                # Get file info
+                file_stat = os.stat(file_path)
+                file_name = os.path.basename(file_path)
+                file_ext = os.path.splitext(file_name)[1].lower()
+
+                # Determine media type
+                if file_ext in settings.SUPPORTED_IMAGE_FORMATS:
+                    media_type = MediaType.IMAGE
+                elif file_ext in settings.SUPPORTED_VIDEO_FORMATS:
+                    media_type = MediaType.VIDEO
+                else:
+                    logger.warning(f"Unsupported file type: {file_path}")
+                    continue
+
+                # Generate file hash for deduplication
+                with open(file_path, 'rb') as f:
+                    file_hash = hashlib.md5(f.read()).hexdigest()
+
+                # Get image dimensions for images
+                width, height = None, None
+                if media_type == MediaType.IMAGE:
+                    try:
+                        with Image.open(file_path) as img:
+                            width, height = img.size
+                    except Exception as e:
+                        logger.warning(f"Could not get image dimensions for {file_path}: {e}")
+
+                # Analyze with AI based on media type
+                logger.info(f"📁 Analyzing {file_name} with AI...")
+                logger.info(f"📁 File extension: {file_ext}")
+                logger.info(f"📁 Media type detected: {media_type} (is VIDEO: {media_type == MediaType.VIDEO})")
+                logger.info(f"📁 Supported video formats: {settings.SUPPORTED_VIDEO_FORMATS}")
+                logger.info(f"📁 Supported image formats: {settings.SUPPORTED_IMAGE_FORMATS}")
+
+                if media_type == MediaType.VIDEO:
+                    logger.info(f"📁 ✅ Calling analyze_video for {file_name}")
+                    ai_result = await llm_service.analyze_video(file_path)
+                    logger.info(f"📁 Video analysis completed for {file_name}")
+                else:
+                    logger.info(f"📁 ✅ Calling analyze_image for {file_name}")
+                    ai_result = await llm_service.analyze_image(file_path)
+                    logger.info(f"📁 Image analysis completed for {file_name}")
+
+                logger.info(f"📁 AI analysis result for {file_name}: {ai_result}")
+
+                # Extract description from AI result
+                if isinstance(ai_result, dict):
+                    ai_description = ai_result.get('description', '')
+                else:
+                    ai_description = str(ai_result) if ai_result else ''
+
+                # Generate tags from description
+                tags = await llm_service.extract_tags(ai_description) if ai_description else []
+
+                # Create metadata
+                metadata = MediaMetadata(
+                    file_path=file_path,
+                    file_name=file_name,
+                    file_size=file_stat.st_size,
+                    file_hash=file_hash,
+                    media_type=media_type,
+                    width=width,
+                    height=height,
+                    created_date=datetime.fromtimestamp(file_stat.st_ctime),
+                    modified_date=datetime.fromtimestamp(file_stat.st_mtime),
+                    ai_description=ai_description,
+                    tags=tags
+                )
+
+                # Generate embedding from description
+                if ai_description:
+                    logger.info(f"Generating embedding for {file_name}...")
+                    embedding = await llm_service._generate_embedding(ai_description)
+
+                    # Store in vector database
+                    from app.database.schemas import MediaDocument
+                    import uuid
+
+                    # Create dimensions string
+                    dimensions = f"{width}x{height}" if width and height else None
+
+                    document = MediaDocument(
+                        file_id=str(uuid.uuid4()),
+                        file_path=file_path,
+                        file_name=file_name,
+                        file_size=file_stat.st_size,
+                        created_date=datetime.fromtimestamp(file_stat.st_ctime),
+                        modified_date=datetime.fromtimestamp(file_stat.st_mtime),
+                        media_type=media_type.value,
+                        dimensions=dimensions,
+                        duration=None,  # TODO: Extract video duration
+                        format=file_ext.upper().lstrip('.'),
+                        ai_description=ai_description,
+                        ai_tags=tags,
+                        ai_confidence=None,  # TODO: Add confidence scoring
+                        embedding=embedding
+                    )
+
+                    vector_db.add_media(document)
+
+                    logger.info(f"✅ Successfully processed {file_name}")
+                else:
+                    logger.warning(f"No AI description generated for {file_name}")
+
+                if self.current_job:
+                    self.current_job["progress"].successful_files += 1
+
+            except Exception as e:
+                logger.error(f"Failed to process {file_path}: {e}")
+                if self.current_job:
+                    self.current_job["progress"].failed_files += 1

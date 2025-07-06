@@ -55,26 +55,34 @@ class MediaDocument:
     def to_chroma_metadata(self) -> Dict[str, Any]:
         """
         Convert to ChromaDB metadata format.
-        
+
         ChromaDB metadata must be JSON-serializable and cannot contain
-        complex objects like datetime directly.
+        complex objects like datetime directly. None values are filtered out.
         """
-        return {
+        metadata = {
             "file_path": self.file_path,
             "file_name": self.file_name,
             "file_size": self.file_size,
             "created_date": self.created_date.isoformat(),
             "modified_date": self.modified_date.isoformat(),
             "media_type": self.media_type,
-            "dimensions": self.dimensions,
-            "duration": self.duration,
-            "format": self.format,
-            "ai_description": self.ai_description,
+            "ai_description": self.ai_description or "",
             "ai_tags": json.dumps(self.ai_tags),  # Store as JSON string
-            "ai_confidence": self.ai_confidence,
             "indexed_date": self.indexed_date.isoformat(),
             "index_version": self.index_version
         }
+
+        # Add optional fields only if they are not None
+        if self.dimensions is not None:
+            metadata["dimensions"] = self.dimensions
+        if self.duration is not None:
+            metadata["duration"] = self.duration
+        if self.format is not None:
+            metadata["format"] = self.format
+        if self.ai_confidence is not None:
+            metadata["ai_confidence"] = self.ai_confidence
+
+        return metadata
     
     @classmethod
     def from_chroma_metadata(cls, file_id: str, metadata: Dict[str, Any]) -> "MediaDocument":

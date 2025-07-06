@@ -2,7 +2,7 @@
  * Media viewer modal component for detailed media display.
  */
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -15,12 +15,17 @@ import {
   Divider,
   Grid,
   Button,
+  ImageList,
+  ImageListItem,
+  Alert,
+  Snackbar,
 } from '@mui/material';
 import {
   Close as CloseIcon,
   Download as DownloadIcon,
   FindInPage as SimilarIcon,
   PlayArrow as PlayIcon,
+  FolderOpen as FolderOpenIcon,
 } from '@mui/icons-material';
 import { MediaItem, MediaType, formatFileSize, formatDuration } from '../types/media';
 import { mediaAPI } from '../services/api';
@@ -34,9 +39,35 @@ interface MediaViewerProps {
 
 const MediaViewer: React.FC<MediaViewerProps> = ({ media, open, onClose }) => {
   const { findSimilar } = useSearchStore();
+  const [videoFrames, setVideoFrames] = useState<string[]>([]);
+  const [loadingFrames, setLoadingFrames] = useState(false);
+  const [snackbarOpen, setSnackbarOpen] = useState(false);
+  const [snackbarMessage, setSnackbarMessage] = useState('');
 
   const isVideo = media.metadata.media_type === MediaType.VIDEO;
   const mediaUrl = mediaAPI.getMediaUrl(media.file_id);
+
+  // Load video frames when modal opens for video files
+  useEffect(() => {
+    if (open && isVideo) {
+      loadVideoFrames();
+    }
+  }, [open, isVideo, media.file_id]);
+
+  const loadVideoFrames = async () => {
+    try {
+      setLoadingFrames(true);
+      const response = await fetch(`/api/media/${media.file_id}/frames?frame_count=5&size=300`);
+      if (response.ok) {
+        const data = await response.json();
+        setVideoFrames(data.frame_urls || []);
+      }
+    } catch (error) {
+      console.error('Failed to load video frames:', error);
+    } finally {
+      setLoadingFrames(false);
+    }
+  };
 
   const handleDownload = () => {
     const downloadUrl = mediaAPI.getDownloadUrl(media.file_id);
@@ -46,6 +77,25 @@ const MediaViewer: React.FC<MediaViewerProps> = ({ media, open, onClose }) => {
   const handleFindSimilar = () => {
     findSimilar(media.file_id);
     onClose();
+  };
+
+  const handleOpenInExplorer = async () => {
+    try {
+      const response = await fetch(`/api/media/${media.file_id}/open-in-explorer`, {
+        method: 'POST',
+      });
+
+      if (response.ok) {
+        setSnackbarMessage('File opened in explorer successfully');
+        setSnackbarOpen(true);
+      } else {
+        throw new Error('Failed to open file in explorer');
+      }
+    } catch (error) {
+      console.error('Failed to open file in explorer:', error);
+      setSnackbarMessage('Failed to open file in explorer');
+      setSnackbarOpen(true);
+    }
   };
 
   return (
@@ -138,7 +188,7 @@ const MediaViewer: React.FC<MediaViewerProps> = ({ media, open, onClose }) => {
           <Grid item xs={12} md={4} sx={{ p: 3, backgroundColor: 'grey.50' }}>
             <Stack spacing={3}>
               {/* Actions */}
-              <Stack direction="row" spacing={1}>
+              <Stack direction="row" spacing={1} flexWrap="wrap">
                 <Button
                   variant="outlined"
                   startIcon={<DownloadIcon />}
@@ -154,6 +204,14 @@ const MediaViewer: React.FC<MediaViewerProps> = ({ media, open, onClose }) => {
                   size="small"
                 >
                   Find Similar
+                </Button>
+                <Button
+                  variant="outlined"
+                  startIcon={<FolderOpenIcon />}
+                  onClick={handleOpenInExplorer}
+                  size="small"
+                >
+                  Open in Explorer
                 </Button>
               </Stack>
 
@@ -257,6 +315,37 @@ const MediaViewer: React.FC<MediaViewerProps> = ({ media, open, onClose }) => {
                 </Box>
               )}
 
+              {/* Video Frames Preview */}
+              {isVideo && videoFrames.length > 0 && (
+                <Box>
+                  <Typography variant="subtitle2" gutterBottom>
+                    Video Preview Frames
+                  </Typography>
+                  <ImageList cols={3} gap={8} sx={{ width: '100%', height: 'auto' }}>
+                    {videoFrames.map((frameUrl, index) => (
+                      <ImageListItem key={index}>
+                        <img
+                          src={frameUrl}
+                          alt={`Frame ${index + 1}`}
+                          loading="lazy"
+                          style={{
+                            width: '100%',
+                            height: 'auto',
+                            borderRadius: 4,
+                            objectFit: 'cover',
+                          }}
+                        />
+                      </ImageListItem>
+                    ))}
+                  </ImageList>
+                  {loadingFrames && (
+                    <Typography variant="caption" color="text.secondary">
+                      Loading video frames...
+                    </Typography>
+                  )}
+                </Box>
+              )}
+
               <Divider />
 
               {/* Technical Details */}
@@ -301,6 +390,22 @@ const MediaViewer: React.FC<MediaViewerProps> = ({ media, open, onClose }) => {
           </Grid>
         </Grid>
       </DialogContent>
+
+      {/* Snackbar for notifications */}
+      <Snackbar
+        open={snackbarOpen}
+        autoHideDuration={3000}
+        onClose={() => setSnackbarOpen(false)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+      >
+        <Alert
+          onClose={() => setSnackbarOpen(false)}
+          severity={snackbarMessage.includes('Failed') ? 'error' : 'success'}
+          sx={{ width: '100%' }}
+        >
+          {snackbarMessage}
+        </Alert>
+      </Snackbar>
     </Dialog>
   );
 };

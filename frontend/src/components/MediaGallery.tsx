@@ -15,12 +15,17 @@ import {
   IconButton,
   Skeleton,
   Paper,
-
   Checkbox,
   Menu,
   MenuItem,
   ListItemIcon,
   ListItemText,
+  Dialog,
+  DialogTitle,
+  DialogContent,
+  DialogActions,
+  Button,
+  CircularProgress,
 } from '@mui/material';
 import {
   PlayArrow as PlayIcon,
@@ -29,12 +34,13 @@ import {
   Download as DownloadIcon,
   Info as InfoIcon,
   FindInPage as SimilarIcon,
-
+  Delete as DeleteIcon,
 } from '@mui/icons-material';
 import { MediaItem, MediaType, formatFileSize, formatDuration } from '../types/media';
 import { useSearchStore } from '../store/searchStore';
-import { mediaAPI } from '../services/api';
+import { mediaAPI, indexingAPI } from '../services/api';
 import MediaViewer from './MediaViewer';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 interface MediaGalleryProps {
   results: MediaItem[];
@@ -53,6 +59,28 @@ const MediaGallery: React.FC<MediaGalleryProps> = ({ results, loading }) => {
   const [selectedMedia, setSelectedMedia] = useState<MediaItem | null>(null);
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null);
   const [menuFileId, setMenuFileId] = useState<string | null>(null);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [itemToDelete, setItemToDelete] = useState<MediaItem | null>(null);
+
+  const queryClient = useQueryClient();
+
+  // Delete mutation
+  const deleteMutation = useMutation({
+    mutationFn: async (fileId: string) => {
+      await mediaAPI.deleteFiles([fileId], false, false);
+    },
+    onSuccess: () => {
+      // Invalidate and refetch search results
+      queryClient.invalidateQueries({ queryKey: ['search'] });
+      queryClient.invalidateQueries({ queryKey: ['media'] });
+      setDeleteConfirmOpen(false);
+      setItemToDelete(null);
+    },
+    onError: (error) => {
+      console.error('Failed to delete file:', error);
+      // You could add a toast notification here
+    },
+  });
 
   const handleItemClick = (item: MediaItem) => {
     setSelectedMedia(item);
@@ -86,6 +114,23 @@ const MediaGallery: React.FC<MediaGalleryProps> = ({ results, loading }) => {
   const handleFindSimilar = (fileId: string) => {
     findSimilar(fileId);
     handleMenuClose();
+  };
+
+  const handleDeleteClick = (item: MediaItem) => {
+    setItemToDelete(item);
+    setDeleteConfirmOpen(true);
+    handleMenuClose();
+  };
+
+  const handleDeleteConfirm = () => {
+    if (itemToDelete) {
+      deleteMutation.mutate(itemToDelete.file_id);
+    }
+  };
+
+  const handleDeleteCancel = () => {
+    setDeleteConfirmOpen(false);
+    setItemToDelete(null);
   };
 
   const renderLoadingSkeleton = () => (
@@ -365,6 +410,19 @@ const MediaGallery: React.FC<MediaGalleryProps> = ({ results, loading }) => {
           </ListItemIcon>
           <ListItemText>Find Similar</ListItemText>
         </MenuItem>
+
+        <MenuItem
+          onClick={() => {
+            const item = results.find(r => r.file_id === menuFileId);
+            if (item) handleDeleteClick(item);
+          }}
+          sx={{ color: 'error.main' }}
+        >
+          <ListItemIcon>
+            <DeleteIcon fontSize="small" sx={{ color: 'error.main' }} />
+          </ListItemIcon>
+          <ListItemText>Delete from Library</ListItemText>
+        </MenuItem>
       </Menu>
 
       {/* Media Viewer Modal */}
@@ -375,6 +433,37 @@ const MediaGallery: React.FC<MediaGalleryProps> = ({ results, loading }) => {
           onClose={() => setSelectedMedia(null)}
         />
       )}
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog
+        open={deleteConfirmOpen}
+        onClose={handleDeleteCancel}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Delete Media File</DialogTitle>
+        <DialogContent>
+          <Typography>
+            Are you sure you want to delete "{itemToDelete?.metadata.file_name}" from the library?
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+            This will remove the file from search results and delete its analysis data.
+            The original file will remain on disk.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleDeleteCancel}>Cancel</Button>
+          <Button
+            onClick={handleDeleteConfirm}
+            color="error"
+            variant="contained"
+            disabled={deleteMutation.isPending}
+            startIcon={deleteMutation.isPending ? <CircularProgress size={16} /> : <DeleteIcon />}
+          >
+            {deleteMutation.isPending ? 'Deleting...' : 'Delete'}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };

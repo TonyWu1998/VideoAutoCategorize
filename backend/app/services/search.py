@@ -39,46 +39,54 @@ class SearchService:
     ) -> List[MediaItem]:
         """
         Perform semantic search on indexed media files.
-        
+
         Args:
             query: Natural language search query
             filters: Search filters to apply
             include_metadata: Whether to include full metadata
             include_thumbnails: Whether to include thumbnail URLs
-            
+
         Returns:
             List of matching MediaItem objects
         """
         try:
-            logger.debug(f"Performing semantic search for: '{query}'")
-            
+            logger.info(f"🔍 Starting semantic search for query: '{query}'")
+            logger.info(f"🔍 Search operates on ALREADY-INDEXED files only")
+            logger.info(f"🔍 Search does NOT trigger new AI analysis")
+
             # Check cache first
             cache_key = self._generate_cache_key(query, filters)
             if settings.ENABLE_SEARCH_CACHE and cache_key in self._search_cache:
                 cached_result = self._search_cache[cache_key]
                 if time.time() - cached_result["timestamp"] < settings.SEARCH_CACHE_TTL_SECONDS:
-                    logger.debug("Returning cached search results")
+                    logger.info(f"🔍 Returning cached search results")
                     return cached_result["results"]
             
             # Generate query embedding
+            logger.info(f"🔍 Generating embedding for search query")
             query_embedding = await self.llm_service.generate_query_embedding(query)
-            
+            logger.info(f"🔍 Query embedding generated successfully")
+
             # Build search filters for vector database
             db_filters = self._build_db_filters(filters)
-            
+            logger.info(f"🔍 Built database filters: {db_filters}")
+
             # Perform vector similarity search
+            logger.info(f"🔍 Searching vector database for similar embeddings")
             search_results = self.vector_db.search_similar(
                 query_embedding=query_embedding,
                 limit=filters.max_results,
                 filters=db_filters
             )
-            
+            logger.info(f"🔍 Found {len(search_results)} potential matches from vector DB")
+
             # Filter results by similarity threshold
             filtered_results = [
                 result for result in search_results
                 if result["similarity_score"] >= filters.min_similarity
             ]
-            
+            logger.info(f"🔍 After similarity filtering: {len(filtered_results)} results")
+
             # Convert to MediaItem objects
             media_items = []
             for result in filtered_results:
@@ -89,24 +97,27 @@ class SearchService:
                         include_thumbnails
                     )
                     media_items.append(media_item)
+                    logger.debug(f"🔍 Created media item: {media_item.metadata.file_name} - {media_item.metadata.ai_description[:50]}...")
                 except Exception as e:
-                    logger.warning(f"Failed to create media item: {e}")
+                    logger.warning(f"🔍 Failed to create media item: {e}")
                     continue
-            
+
             # Apply additional filters
             media_items = self._apply_additional_filters(media_items, filters)
-            
+
             # Sort by similarity score
             media_items.sort(key=lambda x: x.similarity_score or 0, reverse=True)
-            
+
             # Cache results
             if settings.ENABLE_SEARCH_CACHE:
                 self._search_cache[cache_key] = {
                     "results": media_items,
                     "timestamp": time.time()
                 }
-            
-            logger.debug(f"Search completed, returning {len(media_items)} results")
+
+            logger.info(f"🔍 Search completed, returning {len(media_items)} results")
+            logger.info(f"🔍 NOTE: Results reflect the CURRENT STATE of indexed files")
+            logger.info(f"🔍 Files with analysis errors will show error descriptions")
             return media_items
             
         except Exception as e:

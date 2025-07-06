@@ -12,7 +12,7 @@ from pathlib import Path
 
 # Import application modules
 from app.config import settings
-from app.api import search, indexing, media, health
+from app.api import search, indexing, media, health, config_api
 from app.database.vector_db import VectorDatabase
 
 # Configure logging
@@ -97,6 +97,7 @@ app.include_router(health.router, prefix="/api", tags=["health"])
 app.include_router(search.router, prefix="/api/search", tags=["search"])
 app.include_router(indexing.router, prefix="/api/index", tags=["indexing"])
 app.include_router(media.router, prefix="/api/media", tags=["media"])
+app.include_router(config_api.router, prefix="/api/config", tags=["config"])
 
 # Serve static files (media files)
 try:

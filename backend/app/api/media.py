@@ -31,6 +31,124 @@ logger = logging.getLogger(__name__)
 media_service = MediaService()
 
 
+# =============================================================================
+# LIBRARY MANAGEMENT ENDPOINTS (Must come before /{file_id} route)
+# =============================================================================
+
+@router.get("/library")
+async def get_library_contents(
+    media_type: Optional[MediaType] = Query(None, description="Filter by media type"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of items to return"),
+    offset: int = Query(0, ge=0, description="Number of items to skip"),
+    sort_by: str = Query("created_date", description="Field to sort by"),
+    sort_order: str = Query("desc", regex="^(asc|desc)$", description="Sort order")
+) -> List[MediaItem]:
+    """
+    Get all files currently in the media library.
+
+    Returns a paginated list of all indexed media files with their metadata.
+    This represents the persistent library contents.
+    """
+    try:
+        files = await media_service.list_files(
+            media_type=media_type,
+            limit=limit,
+            offset=offset,
+            sort_by=sort_by,
+            sort_order=sort_order
+        )
+        return files
+
+    except Exception as e:
+        logger.error(f"Failed to get library contents: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get library contents: {str(e)}")
+
+
+@router.delete("/library")
+async def remove_from_library(
+    file_ids: List[str] = Query(..., description="List of file IDs to remove from library"),
+    delete_from_disk: bool = Query(False, description="Whether to also delete files from disk"),
+    force: bool = Query(False, description="Force removal even if files are missing")
+) -> MediaDeleteResponse:
+    """
+    Remove files from the media library.
+
+    This removes files from the vector database, metadata database,
+    and optionally from disk. Thumbnails and cached data are also cleaned up.
+    """
+    try:
+        result = await media_service.delete_files(
+            file_ids=file_ids,
+            delete_from_disk=delete_from_disk,
+            force=force
+        )
+        return result
+
+    except Exception as e:
+        logger.error(f"Failed to remove files from library: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to remove files from library: {str(e)}")
+
+
+@router.get("/library/stats")
+async def get_library_stats() -> MediaStatsResponse:
+    """
+    Get statistics about the current media library.
+
+    Returns information about total files, file types, storage usage, etc.
+    """
+    try:
+        stats = await media_service.get_stats()
+        return stats
+
+    except Exception as e:
+        logger.error(f"Failed to get library stats: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get library stats: {str(e)}")
+
+
+@router.post("/library/validate")
+async def validate_library():
+    """
+    Validate the integrity of the media library.
+
+    Checks for missing files, orphaned database entries, and other issues.
+    """
+    try:
+        # Import here to avoid circular imports
+        from app.services.indexing import IndexingService
+        indexing_service = IndexingService()
+
+        validation_results = await indexing_service.validate_index()
+
+        return {
+            "validation_results": validation_results,
+            "total_issues": len([r for r in validation_results if not r.get("valid", True)]),
+            "total_checked": len(validation_results),
+            "success": True
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to validate library: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to validate library: {str(e)}")
+
+
+@router.get("/formats/supported")
+async def get_supported_formats():
+    """
+    Get list of supported media file formats.
+
+    Returns the file extensions that can be processed by the system.
+    """
+    return {
+        "image_formats": settings.SUPPORTED_IMAGE_FORMATS,
+        "video_formats": settings.SUPPORTED_VIDEO_FORMATS,
+        "all_formats": settings.all_supported_formats
+    }
+
+
+# =============================================================================
+# MEDIA FILE SERVING ENDPOINTS
+# =============================================================================
+
 @router.get("/{file_id}")
 async def get_media_file(file_id: str):
     """
@@ -68,24 +186,111 @@ async def get_media_thumbnail(
 ):
     """
     Get a thumbnail for a media file.
-    
+
     Generates and caches thumbnails for efficient preview display.
     """
     try:
         thumbnail_path = await media_service.get_thumbnail(file_id, size)
-        
+
         if not thumbnail_path or not Path(thumbnail_path).exists():
             raise HTTPException(status_code=404, detail="Thumbnail not found")
-        
+
         return FileResponse(
             path=thumbnail_path,
             media_type="image/jpeg",
             filename=f"thumbnail_{file_id}_{size}.jpg"
         )
-        
+
     except Exception as e:
         logger.error(f"Failed to serve thumbnail for {file_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to serve thumbnail: {str(e)}")
+
+
+@router.get("/{file_id}/frames")
+async def get_video_frames(
+    file_id: str,
+    frame_count: int = Query(5, ge=1, le=10, description="Number of frames to extract"),
+    size: int = Query(300, ge=100, le=500, description="Frame size in pixels")
+):
+    """
+    Get multiple preview frames from a video file.
+
+    Returns a list of frame URLs for detailed video preview.
+    """
+    try:
+        frame_paths = await media_service.get_video_frames(file_id, frame_count, size)
+
+        if not frame_paths:
+            raise HTTPException(status_code=404, detail="Video frames not found")
+
+        # Return URLs for the frames
+        base_url = f"/api/media/{file_id}/frame"
+        frame_urls = [f"{base_url}/{i}?size={size}" for i in range(len(frame_paths))]
+
+        return {
+            "file_id": file_id,
+            "frame_count": len(frame_urls),
+            "frame_urls": frame_urls
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get video frames for {file_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get video frames: {str(e)}")
+
+
+@router.get("/{file_id}/frame/{frame_index}")
+async def get_video_frame(
+    file_id: str,
+    frame_index: int,
+    size: int = Query(300, ge=100, le=500, description="Frame size in pixels")
+):
+    """
+    Get a specific frame from a video file.
+
+    Serves individual video frames for detailed preview.
+    """
+    try:
+        frame_paths = await media_service.get_video_frames(file_id, 5, size)
+
+        if not frame_paths or frame_index >= len(frame_paths):
+            raise HTTPException(status_code=404, detail="Video frame not found")
+
+        frame_path = frame_paths[frame_index]
+        if not Path(frame_path).exists():
+            raise HTTPException(status_code=404, detail="Video frame not found")
+
+        return FileResponse(
+            path=frame_path,
+            media_type="image/jpeg",
+            filename=f"frame_{file_id}_{frame_index}_{size}.jpg"
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to serve video frame {frame_index} for {file_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to serve video frame: {str(e)}")
+
+
+@router.post("/{file_id}/open-in-explorer")
+async def open_file_in_explorer(file_id: str):
+    """
+    Open a media file in the system's default file explorer.
+
+    Cross-platform support for Windows, macOS, and Linux.
+    """
+    try:
+        success = await media_service.open_file_in_explorer(file_id)
+
+        if not success:
+            raise HTTPException(status_code=404, detail="File not found or could not open explorer")
+
+        return {
+            "success": True,
+            "message": "File opened in explorer successfully"
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to open file {file_id} in explorer: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to open file in explorer: {str(e)}")
 
 
 @router.get("/{file_id}/metadata", response_model=MediaMetadata)
@@ -282,15 +487,4 @@ async def update_media_metadata(
         raise HTTPException(status_code=500, detail=f"Failed to update metadata: {str(e)}")
 
 
-@router.get("/formats/supported")
-async def get_supported_formats():
-    """
-    Get list of supported media file formats.
-    
-    Returns the file extensions that can be processed by the system.
-    """
-    return {
-        "image_formats": settings.SUPPORTED_IMAGE_FORMATS,
-        "video_formats": settings.SUPPORTED_VIDEO_FORMATS,
-        "all_formats": settings.all_supported_formats
-    }
+

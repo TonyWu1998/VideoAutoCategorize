@@ -261,6 +261,66 @@ export const mediaAPI = {
     const response = await apiClient.get('/api/media/formats/supported');
     return response.data;
   },
+
+  // =============================================================================
+  // LIBRARY MANAGEMENT
+  // =============================================================================
+
+  /**
+   * Get all files in the media library
+   */
+  getLibraryContents: async (
+    mediaType?: MediaType,
+    limit: number = 100,
+    offset: number = 0,
+    sortBy: string = 'created_date',
+    sortOrder: string = 'desc'
+  ): Promise<MediaItem[]> => {
+    const response = await apiClient.get<MediaItem[]>('/api/media/library', {
+      params: {
+        media_type: mediaType,
+        limit,
+        offset,
+        sort_by: sortBy,
+        sort_order: sortOrder,
+      },
+    });
+    return response.data;
+  },
+
+  /**
+   * Remove files from the library
+   */
+  removeFromLibrary: async (
+    fileIds: string[],
+    deleteFromDisk: boolean = false,
+    force: boolean = false
+  ) => {
+    const response = await apiClient.delete('/api/media/library', {
+      params: {
+        file_ids: fileIds,
+        delete_from_disk: deleteFromDisk,
+        force,
+      },
+    });
+    return response.data;
+  },
+
+  /**
+   * Get library statistics
+   */
+  getLibraryStats: async (): Promise<MediaStats> => {
+    const response = await apiClient.get<MediaStats>('/api/media/library/stats');
+    return response.data;
+  },
+
+  /**
+   * Validate library integrity
+   */
+  validateLibrary: async () => {
+    const response = await apiClient.post('/api/media/library/validate');
+    return response.data;
+  },
 };
 
 // Indexing API
@@ -388,6 +448,33 @@ export const healthAPI = {
   },
 };
 
+// Config API
+export const configAPI = {
+  /**
+   * Get current LLM configuration
+   */
+  getLLMConfig: async () => {
+    const response = await apiClient.get('/api/config/llm');
+    return response.data;
+  },
+
+  /**
+   * Update LLM configuration
+   */
+  updateLLMConfig: async (config: any) => {
+    const response = await apiClient.post('/api/config/llm', config);
+    return response.data;
+  },
+
+  /**
+   * Reset LLM configuration to defaults
+   */
+  resetLLMConfig: async () => {
+    const response = await apiClient.post('/api/config/llm/reset');
+    return response.data;
+  },
+};
+
 // Export the configured axios instance for custom requests
 export { apiClient };
 
@@ -397,4 +484,5 @@ export default {
   media: mediaAPI,
   indexing: indexingAPI,
   health: healthAPI,
+  config: configAPI,
 };

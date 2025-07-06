@@ -68,7 +68,11 @@ class VectorDatabase:
         try:
             if not document.embedding:
                 raise ValueError("Document must have an embedding")
-            
+
+            # Ensure collection exists before adding
+            if not self.ensure_collection_exists():
+                raise RuntimeError("Collection does not exist and could not be created")
+
             # Generate file ID if not provided
             if not document.file_id:
                 document.file_id = self._generate_file_id(document.file_path)
@@ -93,26 +97,31 @@ class VectorDatabase:
             raise
     
     def search_similar(
-        self, 
-        query_embedding: List[float], 
+        self,
+        query_embedding: List[float],
         limit: int = 20,
         filters: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
         """
         Search for similar media files using vector similarity.
-        
+
         Args:
             query_embedding: Vector embedding of the search query
             limit: Maximum number of results to return
             filters: Optional metadata filters
-            
+
         Returns:
             List of search results with metadata and similarity scores
         """
         try:
+            # Ensure collection exists before searching
+            if not self.ensure_collection_exists():
+                logger.warning("Collection does not exist or is not accessible, returning empty results")
+                return []
+
             # Build where clause for filtering
             where_clause = self._build_where_clause(filters) if filters else None
-            
+
             # Perform similarity search
             results = self.collection.query(
                 query_embeddings=[query_embedding],
@@ -120,16 +129,27 @@ class VectorDatabase:
                 where=where_clause,
                 include=["metadatas", "documents", "distances"]
             )
-            
+
             # Format results
             formatted_results = self._format_search_results(results)
-            
+
             logger.debug(f"Vector search returned {len(formatted_results)} results")
             return formatted_results
-            
+
         except Exception as e:
             logger.error(f"Vector search failed: {e}")
-            raise
+            # Try to recover by ensuring collection exists
+            try:
+                logger.info("Attempting to recover from search failure...")
+                if self.ensure_collection_exists():
+                    logger.info("Collection recovered, returning empty results for this search")
+                    return []
+                else:
+                    logger.error("Collection recovery failed")
+                    raise
+            except Exception as recovery_error:
+                logger.error(f"Search recovery failed: {recovery_error}")
+                raise
     
     def get_media(self, file_id: str) -> Optional[MediaDocument]:
         """
@@ -152,7 +172,7 @@ class VectorDatabase:
             
             # Convert back to MediaDocument
             metadata = results["metadatas"][0]
-            embedding = results["embeddings"][0] if results["embeddings"] else None
+            embedding = results["embeddings"][0] if results["embeddings"] is not None and len(results["embeddings"]) > 0 else None
             
             document = MediaDocument.from_chroma_metadata(file_id, metadata)
             document.embedding = embedding
@@ -207,10 +227,15 @@ class VectorDatabase:
             bool: True if successful, False otherwise
         """
         try:
+            # Ensure collection exists before deleting
+            if not self.ensure_collection_exists():
+                logger.warning(f"Collection does not exist, cannot delete document: {file_id}")
+                return False
+
             self.collection.delete(ids=[file_id])
             logger.debug(f"Deleted media document: {file_id}")
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to delete media document {file_id}: {e}")
             return False
@@ -233,9 +258,14 @@ class VectorDatabase:
             List of MediaDocument objects
         """
         try:
+            # Ensure collection exists before listing
+            if not self.ensure_collection_exists():
+                logger.warning("Collection does not exist, returning empty list")
+                return []
+
             # Build where clause for filtering
             where_clause = self._build_where_clause(filters) if filters else None
-            
+
             # Get documents (ChromaDB doesn't support offset directly)
             results = self.collection.get(
                 where=where_clause,
@@ -267,8 +297,17 @@ class VectorDatabase:
             Dictionary containing database statistics
         """
         try:
+            # Ensure collection exists before getting stats
+            if not self.ensure_collection_exists():
+                return {
+                    "total_documents": 0,
+                    "collection_name": MEDIA_COLLECTION_NAME,
+                    "database_path": settings.CHROMA_DB_PATH,
+                    "error": "Collection does not exist"
+                }
+
             total_count = self.collection.count()
-            
+
             # Get sample of documents to calculate stats
             sample_results = self.collection.get(
                 limit=min(1000, total_count),
@@ -317,31 +356,106 @@ class VectorDatabase:
     def clear_collection(self) -> bool:
         """
         Clear all documents from the collection.
-        
+
         WARNING: This operation cannot be undone.
-        
+
         Returns:
             bool: True if successful, False otherwise
         """
         try:
-            # Delete the collection and recreate it
-            self.client.delete_collection(MEDIA_COLLECTION_NAME)
-            
-            self.collection = self.client.create_collection(
+            logger.info("Starting collection clear operation...")
+
+            # First, try to delete the collection if it exists
+            try:
+                self.client.delete_collection(MEDIA_COLLECTION_NAME)
+                logger.info("Existing collection deleted successfully")
+            except Exception as delete_error:
+                logger.warning(f"Collection deletion failed (may not exist): {delete_error}")
+                # Continue anyway - collection might not exist
+
+            # Recreate the collection with the same configuration as __init__
+            self.collection = self.client.get_or_create_collection(
                 name=MEDIA_COLLECTION_NAME,
                 metadata={
-                    "hnsw:space": "cosine",
+                    "hnsw:space": "cosine",  # Use cosine similarity
                     "hnsw:construction_ef": 200,
                     "hnsw:M": 16
                 }
             )
-            
-            logger.warning("Vector database collection cleared")
+
+            # Verify the collection was created successfully
+            count = self.collection.count()
+            logger.warning(f"Vector database collection cleared and recreated (count: {count})")
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to clear collection: {e}")
-            return False
+            # Try to reinitialize the collection as a fallback
+            try:
+                logger.info("Attempting to reinitialize collection as fallback...")
+                self.collection = self.client.get_or_create_collection(
+                    name=MEDIA_COLLECTION_NAME,
+                    metadata={
+                        "hnsw:space": "cosine",
+                        "hnsw:construction_ef": 200,
+                        "hnsw:M": 16
+                    }
+                )
+                logger.info("Collection reinitialized successfully")
+                return True
+            except Exception as fallback_error:
+                logger.error(f"Fallback collection initialization failed: {fallback_error}")
+                return False
+
+    def ensure_collection_exists(self) -> bool:
+        """
+        Ensure the collection exists and is accessible.
+
+        This method can be called before operations to verify the collection
+        is available and recreate it if necessary.
+
+        Returns:
+            bool: True if collection exists and is accessible, False otherwise
+        """
+        try:
+            # Try to access the collection
+            if self.collection is None:
+                logger.warning("Collection reference is None, attempting to reinitialize...")
+                self._reinitialize_collection()
+                return self.collection is not None
+
+            # Test collection accessibility
+            count = self.collection.count()
+            logger.debug(f"Collection exists and accessible (count: {count})")
+            return True
+
+        except Exception as e:
+            logger.warning(f"Collection not accessible: {e}")
+            # Try to reinitialize
+            try:
+                self._reinitialize_collection()
+                return self.collection is not None
+            except Exception as reinit_error:
+                logger.error(f"Failed to reinitialize collection: {reinit_error}")
+                return False
+
+    def _reinitialize_collection(self) -> None:
+        """
+        Reinitialize the collection reference.
+
+        This is used as a recovery mechanism when the collection becomes
+        inaccessible or doesn't exist.
+        """
+        logger.info("Reinitializing collection reference...")
+        self.collection = self.client.get_or_create_collection(
+            name=MEDIA_COLLECTION_NAME,
+            metadata={
+                "hnsw:space": "cosine",  # Use cosine similarity
+                "hnsw:construction_ef": 200,
+                "hnsw:M": 16
+            }
+        )
+        logger.info("Collection reference reinitialized successfully")
     
     def get_collection(self):
         """Get the ChromaDB collection object."""
