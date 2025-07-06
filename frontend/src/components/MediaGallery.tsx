@@ -15,8 +15,7 @@ import {
   IconButton,
   Skeleton,
   Paper,
-  Tooltip,
-  Badge,
+
   Checkbox,
   Menu,
   MenuItem,
@@ -30,7 +29,7 @@ import {
   Download as DownloadIcon,
   Info as InfoIcon,
   FindInPage as SimilarIcon,
-  Delete as DeleteIcon,
+
 } from '@mui/icons-material';
 import { MediaItem, MediaType, formatFileSize, formatDuration } from '../types/media';
 import { useSearchStore } from '../store/searchStore';

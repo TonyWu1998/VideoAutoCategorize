@@ -19,7 +19,7 @@ import {
 } from '../types/indexing';
 
 // API configuration
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:8000';
 const API_TIMEOUT = 30000; // 30 seconds
 
 // Create axios instance

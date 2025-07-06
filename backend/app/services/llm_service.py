@@ -343,13 +343,13 @@ Respond in JSON format with keys: description, objects, setting, mood, colors, t
             Vector embedding as list of floats
         """
         try:
-            # Use Ollama's embeddings API
+            # Use Ollama's embeddings API with dedicated embedding model
             response = await asyncio.to_thread(
                 self.client.embeddings,
-                model=self.model,
+                model=settings.OLLAMA_EMBEDDING_MODEL,
                 prompt=text
             )
-            
+
             return response['embedding']
             
         except Exception as e:
@@ -468,12 +468,32 @@ Respond in JSON format with keys: description, objects, setting, mood, colors, t
         """Test connection to Ollama service."""
         try:
             models = self.client.list()
-            model_names = [model['name'] for model in models.get('models', [])]
-            
+            # Handle different response formats
+            if hasattr(models, 'models'):
+                model_list = models.models
+            elif isinstance(models, dict) and 'models' in models:
+                model_list = models['models']
+            else:
+                model_list = models if isinstance(models, list) else []
+
+            model_names = []
+            for model in model_list:
+                if hasattr(model, 'model'):
+                    model_names.append(model.model)
+                elif hasattr(model, 'name'):
+                    model_names.append(model.name)
+                elif isinstance(model, dict) and 'model' in model:
+                    model_names.append(model['model'])
+                elif isinstance(model, dict) and 'name' in model:
+                    model_names.append(model['name'])
+                elif isinstance(model, str):
+                    model_names.append(model)
+
             if self.model not in model_names:
                 logger.warning(f"Model {self.model} not found. Available models: {model_names}")
                 # Don't raise exception, as model might be pulled later
-            
+
         except Exception as e:
             logger.error(f"Failed to connect to Ollama: {e}")
-            raise
+            # Don't raise exception to allow startup without Ollama
+            logger.warning("Continuing without Ollama connection - AI features may not work")

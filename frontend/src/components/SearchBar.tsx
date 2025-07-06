@@ -27,8 +27,7 @@ import {
   Search as SearchIcon,
   FilterList as FilterIcon,
   Clear as ClearIcon,
-  ExpandMore as ExpandMoreIcon,
-  ExpandLess as ExpandLessIcon,
+
 } from '@mui/icons-material';
 import { useSearchStore } from '../store/searchStore';
 import { MediaType } from '../types/media';

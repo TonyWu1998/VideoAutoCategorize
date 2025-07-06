@@ -90,6 +90,10 @@ class IndexingService:
             if not self.current_job:
                 return IndexingStatusResponse(
                     status=IndexingStatus.IDLE,
+                    current_paths=[],
+                    batch_size=settings.BATCH_SIZE,
+                    max_concurrent=settings.MAX_CONCURRENT_PROCESSING,
+                    recent_results=[],
                     success=True,
                     message="No active indexing job"
                 )

@@ -2,7 +2,7 @@
  * Main App component for the Media Semantic Search application.
  */
 
-import React from 'react';
+
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { CssBaseline, Container, Box, AppBar, Toolbar, Typography } from '@mui/material';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';

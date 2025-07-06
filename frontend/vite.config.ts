@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
-    host: true,
+    host: '127.0.0.1',
     proxy: {
       '/api': {
         target: 'http://localhost:8000',
@@ -25,6 +25,6 @@ export default defineConfig({
     sourcemap: true,
   },
   define: {
-    'process.env': {}
+    global: 'globalThis',
   }
 })

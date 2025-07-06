@@ -144,8 +144,28 @@ async def _check_ollama_health() -> bool:
         
         # Check if the required model is available
         models = client.list()
-        model_names = [model['name'] for model in models.get('models', [])]
-        
+
+        # Handle different response formats
+        if hasattr(models, 'models'):
+            model_list = models.models
+        elif isinstance(models, dict) and 'models' in models:
+            model_list = models['models']
+        else:
+            model_list = models if isinstance(models, list) else []
+
+        model_names = []
+        for model in model_list:
+            if hasattr(model, 'model'):
+                model_names.append(model.model)
+            elif hasattr(model, 'name'):
+                model_names.append(model.name)
+            elif isinstance(model, dict) and 'model' in model:
+                model_names.append(model['model'])
+            elif isinstance(model, dict) and 'name' in model:
+                model_names.append(model['name'])
+            elif isinstance(model, str):
+                model_names.append(model)
+
         return settings.OLLAMA_MODEL in model_names
         
     except Exception as e:

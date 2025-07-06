@@ -2,9 +2,10 @@
 name = "media-semantic-search-backend"
 version = "0.1.0"
 description = "Backend API for Local Media Semantic Search Application"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["Media Search Team <team@example.com>"]
 readme = "README.md"
 packages = [{include = "app"}]
+package-mode = false
 
 [tool.poetry.dependencies]
 python = "^3.11"
