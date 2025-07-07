@@ -10,7 +10,12 @@ import logging
 from pathlib import Path
 
 from app.config import settings
-from app.database.schemas import MediaDocument, MEDIA_COLLECTION_NAME
+from app.database.schemas import (
+    MediaDocument,
+    VideoFrameDocument,
+    MEDIA_COLLECTION_NAME,
+    FRAME_COLLECTION_NAME
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +53,19 @@ class VectorDatabase:
                     "hnsw:M": 16
                 }
             )
-            
-            logger.info(f"Vector database initialized with {self.collection.count()} documents")
+
+            # Get or create the frame collection for video frame embeddings
+            # Note: ChromaDB will auto-detect embedding dimension from first document
+            self.frame_collection = self.client.get_or_create_collection(
+                name=FRAME_COLLECTION_NAME,
+                metadata={
+                    "hnsw:space": "cosine",  # Use cosine similarity
+                    "hnsw:construction_ef": 200,
+                    "hnsw:M": 16
+                }
+            )
+
+            logger.info(f"Vector database initialized with {self.collection.count()} media documents and {self.frame_collection.count()} frame documents")
             
         except Exception as e:
             logger.error(f"Failed to initialize vector database: {e}")
@@ -526,4 +542,275 @@ class VectorDatabase:
                 "searchable_text": documents[i]
             })
         
+        return formatted
+
+    # =========================================================================
+    # FRAME-LEVEL OPERATIONS
+    # =========================================================================
+
+    def add_frame(self, frame_document: VideoFrameDocument) -> str:
+        """
+        Add a video frame document to the vector database.
+
+        Args:
+            frame_document: VideoFrameDocument containing frame information and embedding
+
+        Returns:
+            str: The frame ID of the added document
+        """
+        try:
+            if not frame_document.embedding:
+                raise ValueError("Frame document must have an embedding")
+
+            # Ensure frame collection exists
+            if not hasattr(self, 'frame_collection') or self.frame_collection is None:
+                logger.error("Frame collection not initialized")
+                return ""
+
+            # Prepare data for ChromaDB
+            metadata = frame_document.to_chroma_metadata()
+            searchable_text = frame_document.to_searchable_text()
+
+            # Add to frame collection
+            self.frame_collection.add(
+                ids=[frame_document.frame_id],
+                embeddings=[frame_document.embedding],
+                metadatas=[metadata],
+                documents=[searchable_text]
+            )
+
+            logger.debug(f"Added frame document: {frame_document.frame_id}")
+            return frame_document.frame_id
+
+        except Exception as e:
+            logger.error(f"Failed to add frame document {frame_document.frame_id}: {e}")
+            return ""
+
+    def add_frames_batch(self, frame_documents: List[VideoFrameDocument]) -> List[str]:
+        """
+        Add multiple video frame documents in a batch operation.
+
+        Args:
+            frame_documents: List of VideoFrameDocument objects
+
+        Returns:
+            List of frame IDs that were successfully added
+        """
+        try:
+            if not frame_documents:
+                return []
+
+            # Ensure all frames have embeddings
+            valid_frames = [frame for frame in frame_documents if frame.embedding]
+            if len(valid_frames) != len(frame_documents):
+                logger.warning(f"Skipping {len(frame_documents) - len(valid_frames)} frames without embeddings")
+
+            if not valid_frames:
+                return []
+
+            # Prepare batch data
+            frame_ids = [frame.frame_id for frame in valid_frames]
+            embeddings = [frame.embedding for frame in valid_frames]
+            metadatas = [frame.to_chroma_metadata() for frame in valid_frames]
+            documents = [frame.to_searchable_text() for frame in valid_frames]
+
+            # Add batch to frame collection
+            self.frame_collection.add(
+                ids=frame_ids,
+                embeddings=embeddings,
+                metadatas=metadatas,
+                documents=documents
+            )
+
+            logger.info(f"Added {len(valid_frames)} frame documents in batch")
+            return frame_ids
+
+        except Exception as e:
+            logger.error(f"Failed to add frame documents batch: {e}")
+            return []
+
+    def get_frame(self, frame_id: str) -> Optional[VideoFrameDocument]:
+        """
+        Get a video frame document by its frame ID.
+
+        Args:
+            frame_id: Unique identifier for the frame
+
+        Returns:
+            VideoFrameDocument if found, None otherwise
+        """
+        try:
+            results = self.frame_collection.get(
+                ids=[frame_id],
+                include=["metadatas", "documents", "embeddings"]
+            )
+
+            if not results["ids"]:
+                return None
+
+            # Convert back to VideoFrameDocument
+            metadata = results["metadatas"][0]
+            embedding = results["embeddings"][0] if results["embeddings"] is not None and len(results["embeddings"]) > 0 else None
+
+            frame_document = VideoFrameDocument.from_chroma_metadata(frame_id, metadata)
+            frame_document.embedding = embedding
+
+            return frame_document
+
+        except Exception as e:
+            logger.error(f"Failed to get frame document {frame_id}: {e}")
+            return None
+
+    def get_video_frames(self, video_file_id: str, limit: Optional[int] = None) -> List[VideoFrameDocument]:
+        """
+        Get all frames for a specific video.
+
+        Args:
+            video_file_id: ID of the parent video
+            limit: Maximum number of frames to return
+
+        Returns:
+            List of VideoFrameDocument objects ordered by frame_index
+        """
+        try:
+            # Query frames for the specific video
+            where_clause = {"video_file_id": video_file_id}
+
+            results = self.frame_collection.get(
+                where=where_clause,
+                include=["metadatas", "documents", "embeddings"],
+                limit=limit
+            )
+
+            if not results["ids"]:
+                return []
+
+            # Convert to VideoFrameDocument objects
+            frames = []
+            for i, frame_id in enumerate(results["ids"]):
+                metadata = results["metadatas"][i]
+                embedding = results["embeddings"][i] if results["embeddings"] and len(results["embeddings"]) > i else None
+
+                frame_document = VideoFrameDocument.from_chroma_metadata(frame_id, metadata)
+                frame_document.embedding = embedding
+                frames.append(frame_document)
+
+            # Sort by frame index
+            frames.sort(key=lambda x: x.frame_index)
+
+            return frames
+
+        except Exception as e:
+            logger.error(f"Failed to get frames for video {video_file_id}: {e}")
+            return []
+
+    def delete_video_frames(self, video_file_id: str) -> bool:
+        """
+        Delete all frames for a specific video.
+
+        Args:
+            video_file_id: ID of the parent video
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Get all frame IDs for the video
+            results = self.frame_collection.get(
+                where={"video_file_id": video_file_id},
+                include=["metadatas"]
+            )
+
+            if results["ids"]:
+                # Delete all frames for this video
+                self.frame_collection.delete(ids=results["ids"])
+                logger.info(f"Deleted {len(results['ids'])} frames for video {video_file_id}")
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to delete frames for video {video_file_id}: {e}")
+            return False
+
+    def search_frames(self, query_embedding: List[float], video_file_id: Optional[str] = None,
+                     limit: int = 10, min_similarity: float = 0.3) -> List[Dict[str, Any]]:
+        """
+        Search for similar video frames using vector similarity.
+
+        Args:
+            query_embedding: Vector embedding to search for
+            video_file_id: Optional video ID to limit search to specific video
+            limit: Maximum number of results to return
+            min_similarity: Minimum similarity threshold
+
+        Returns:
+            List of frame search results with similarity scores
+        """
+        try:
+            # Build where clause for filtering
+            where_clause = {}
+            if video_file_id:
+                where_clause["video_file_id"] = video_file_id
+
+            # Perform vector search
+            results = self.frame_collection.query(
+                query_embeddings=[query_embedding],
+                n_results=limit,
+                where=where_clause if where_clause else None,
+                include=["metadatas", "documents", "distances"]
+            )
+
+            # Format and filter results
+            formatted_results = self._format_frame_search_results(results)
+
+            # Filter by minimum similarity
+            filtered_results = [
+                result for result in formatted_results
+                if result["similarity_score"] >= min_similarity
+            ]
+
+            logger.debug(f"Frame search returned {len(filtered_results)} results above similarity threshold {min_similarity}")
+            return filtered_results
+
+        except Exception as e:
+            logger.error(f"Failed to search frames: {e}")
+            return []
+
+    def _format_frame_search_results(self, results: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Format ChromaDB frame search results for API response.
+
+        Args:
+            results: Raw ChromaDB query results
+
+        Returns:
+            Formatted list of frame search results
+        """
+        formatted = []
+
+        if not results["ids"] or not results["ids"][0]:
+            return formatted
+
+        ids = results["ids"][0]
+        metadatas = results["metadatas"][0]
+        documents = results["documents"][0]
+        distances = results["distances"][0]
+
+        for i, frame_id in enumerate(ids):
+            # Convert distance to similarity score (cosine distance -> similarity)
+            similarity_score = 1 - distances[i]
+
+            # Create VideoFrameDocument from metadata
+            frame_document = VideoFrameDocument.from_chroma_metadata(frame_id, metadatas[i])
+
+            formatted.append({
+                "frame_id": frame_id,
+                "video_file_id": frame_document.video_file_id,
+                "frame_index": frame_document.frame_index,
+                "timestamp_seconds": frame_document.timestamp_seconds,
+                "metadata": frame_document,
+                "similarity_score": similarity_score,
+                "searchable_text": documents[i]
+            })
+
         return formatted

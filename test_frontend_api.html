@@ -96,10 +96,6 @@
         <div class="test-section info">
             <h3>✏️ Update LLM Settings</h3>
             <div class="form-group">
-                <label for="maxFrames">Max Video Frames:</label>
-                <input type="number" id="maxFrames" value="15" min="1" max="50">
-            </div>
-            <div class="form-group">
                 <label for="frameInterval">Frame Interval (seconds):</label>
                 <input type="number" id="frameInterval" value="30" min="1" max="300">
             </div>
@@ -177,7 +173,6 @@
                 `);
                 
                 // Update form fields with current values
-                document.getElementById('maxFrames').value = data.max_video_frames;
                 document.getElementById('frameInterval').value = data.video_frame_interval;
                 document.getElementById('ollamaModel').value = data.ollama_model;
                 document.getElementById('embeddingModel').value = data.ollama_embedding_model;
@@ -207,7 +202,6 @@
         async function updateLLMConfig() {
             try {
                 const config = {
-                    max_video_frames: parseInt(document.getElementById('maxFrames').value),
                     video_frame_interval: parseInt(document.getElementById('frameInterval').value),
                     ollama_model: document.getElementById('ollamaModel').value,
                     ollama_embedding_model: document.getElementById('embeddingModel').value

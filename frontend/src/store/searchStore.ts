@@ -11,7 +11,7 @@ import {
   MediaType,
   defaultSearchFilters,
 } from '../types/media';
-import { searchAPI, mediaAPI } from '../services/api';
+import { searchAPI, mediaAPI, indexingAPI } from '../services/api';
 
 interface SearchState {
   // Search state
@@ -36,6 +36,10 @@ interface SearchState {
   // Search suggestions
   suggestions: string[];
   showSuggestions: boolean;
+
+  // Indexing monitoring
+  isMonitoringIndexing: boolean;
+  lastIndexingStatus: string | null;
   
   // Actions
   setQuery: (query: string) => void;
@@ -62,6 +66,17 @@ interface SearchState {
 
   // Similar search
   findSimilar: (fileId: string) => Promise<void>;
+
+  // Data refresh methods
+  refreshData: () => Promise<void>;
+  removeItemFromState: (fileId: string) => void;
+  clearAllData: () => void;
+
+  // Indexing status monitoring
+  startIndexingMonitor: () => void;
+  stopIndexingMonitor: () => void;
+  checkIndexingStatusOnce: () => Promise<void>;
+  isMonitoringIndexing: boolean;
 }
 
 export const useSearchStore = create<SearchState>()(
@@ -86,6 +101,10 @@ export const useSearchStore = create<SearchState>()(
 
       suggestions: [],
       showSuggestions: false,
+
+      // Indexing monitoring
+      isMonitoringIndexing: false,
+      lastIndexingStatus: null,
       
       // Actions
       setQuery: (query: string) => {
@@ -320,10 +339,10 @@ export const useSearchStore = create<SearchState>()(
       // Similar search
       findSimilar: async (fileId: string) => {
         set({ isLoading: true, error: null });
-        
+
         try {
           const similarItems = await searchAPI.findSimilar(fileId, 20, 0.4);
-          
+
           set({
             searchResults: similarItems,
             totalResults: similarItems.length,
@@ -331,13 +350,140 @@ export const useSearchStore = create<SearchState>()(
             query: `Similar to selected file`,
             selectedItems: new Set(),
           });
-          
+
         } catch (error) {
           console.error('Similar search failed:', error);
           set({
             isLoading: false,
             error: error instanceof Error ? error.message : 'Similar search failed',
           });
+        }
+      },
+
+      // Data refresh methods
+      refreshData: async () => {
+        // Reload all media data from the backend
+        await get().loadAllMedia();
+      },
+
+      removeItemFromState: (fileId: string) => {
+        const state = get();
+
+        // Remove from both allMediaItems and searchResults
+        const updatedAllMedia = state.allMediaItems.filter(item => item.file_id !== fileId);
+        const updatedSearchResults = state.searchResults.filter(item => item.file_id !== fileId);
+
+        // Remove from selected items if present
+        const updatedSelectedItems = new Set(state.selectedItems);
+        updatedSelectedItems.delete(fileId);
+
+        set({
+          allMediaItems: updatedAllMedia,
+          searchResults: updatedSearchResults,
+          totalResults: updatedSearchResults.length,
+          selectedItems: updatedSelectedItems,
+        });
+      },
+
+      clearAllData: () => {
+        // Clear all data when database is cleared
+        set({
+          allMediaItems: [],
+          searchResults: [],
+          totalResults: 0,
+          query: '',
+          selectedItems: new Set(),
+          error: null,
+          suggestions: [],
+          showSuggestions: false,
+        });
+      },
+
+      // Indexing status monitoring
+      startIndexingMonitor: () => {
+        const state = get();
+        if (state.isMonitoringIndexing) {
+          return; // Already monitoring
+        }
+
+        set({ isMonitoringIndexing: true });
+
+        const checkIndexingStatus = async () => {
+          try {
+            const status = await indexingAPI.getStatus();
+            const currentState = get();
+
+            // Check if indexing just completed or failed
+            const wasProcessing = currentState.lastIndexingStatus === 'processing' ||
+                                currentState.lastIndexingStatus === 'scanning';
+            const isNowComplete = status.status === 'completed' || status.status === 'idle';
+            const isNowFailed = status.status === 'failed';
+
+            // Also check for progress completion (in case status is stuck)
+            const progressComplete = status.progress &&
+                                   status.progress.total_files > 0 &&
+                                   status.progress.processed_files >= status.progress.total_files;
+
+            if (wasProcessing && (isNowComplete || isNowFailed || progressComplete)) {
+              // Indexing finished (either completed or failed), refresh data
+              console.log(`Indexing ${status.status} (progress: ${status.progress?.processed_files}/${status.progress?.total_files}), refreshing media data...`);
+              try {
+                await currentState.refreshData();
+                console.log('Media data refreshed successfully after indexing completion');
+              } catch (refreshError) {
+                console.error('Failed to refresh data after indexing completion:', refreshError);
+              }
+            }
+
+            // Update last known status
+            set({ lastIndexingStatus: status.status });
+
+            // Continue monitoring if still indexing or scanning (and progress not complete)
+            const shouldContinueMonitoring = currentState.isMonitoringIndexing &&
+                                           (status.status === 'processing' || status.status === 'scanning') &&
+                                           !progressComplete;
+
+            if (shouldContinueMonitoring) {
+              setTimeout(checkIndexingStatus, 2000); // Check every 2 seconds
+            } else {
+              // Stop monitoring when indexing is done (completed, failed, idle, or progress complete)
+              console.log(`Stopping indexing monitor. Final status: ${status.status}, progress: ${status.progress?.processed_files}/${status.progress?.total_files}`);
+              set({ isMonitoringIndexing: false });
+            }
+          } catch (error) {
+            console.error('Failed to check indexing status:', error);
+            // Continue monitoring even on error, but with longer interval
+            const currentState = get();
+            if (currentState.isMonitoringIndexing) {
+              setTimeout(checkIndexingStatus, 5000); // Check every 5 seconds on error
+            }
+          }
+        };
+
+        // Start monitoring immediately
+        checkIndexingStatus();
+      },
+
+      stopIndexingMonitor: () => {
+        set({ isMonitoringIndexing: false, lastIndexingStatus: null });
+      },
+
+      checkIndexingStatusOnce: async () => {
+        try {
+          const status = await indexingAPI.getStatus();
+          const currentState = get();
+
+          // If indexing is active and we're not already monitoring, start monitoring
+          if ((status.status === 'processing' || status.status === 'scanning') &&
+              !currentState.isMonitoringIndexing) {
+            console.log('Detected active indexing, starting monitor...');
+            currentState.startIndexingMonitor();
+          }
+
+          // Update status
+          set({ lastIndexingStatus: status.status });
+        } catch (error) {
+          console.error('Failed to check indexing status:', error);
         }
       },
     }),

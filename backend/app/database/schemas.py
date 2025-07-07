@@ -138,6 +138,123 @@ class MediaDocument:
 
 
 @dataclass
+class VideoFrameDocument:
+    """
+    Document structure for individual video frames stored in ChromaDB.
+
+    This represents individual frame analysis results with frame-specific
+    metadata and embeddings for granular video search and analysis.
+    """
+
+    # Unique identifiers
+    frame_id: str  # Format: {video_file_id}_frame_{index}
+    video_file_id: str  # Reference to parent video MediaDocument
+    frame_index: int  # Position in video (0, 1, 2...)
+    timestamp_seconds: float  # Time position in video
+
+    # Frame-specific analysis results
+    ai_description: str = ""
+    ai_tags: List[str] = None
+    ai_confidence: Optional[float] = None
+
+    # Frame metadata
+    frame_quality_score: Optional[float] = None  # Analysis quality indicator
+    scene_change_indicator: Optional[bool] = None  # Potential scene boundary
+    extraction_method: str = "time_interval"  # How frame was extracted
+
+    # Analysis metadata
+    analyzed_date: datetime = None
+    analysis_version: str = "1.0"
+    model_used: Optional[str] = None
+
+    # Vector embedding (stored separately in ChromaDB)
+    embedding: Optional[List[float]] = None
+
+    def __post_init__(self):
+        """Initialize default values after dataclass creation."""
+        if self.ai_tags is None:
+            self.ai_tags = []
+        if self.analyzed_date is None:
+            self.analyzed_date = datetime.now(timezone.utc)
+
+    def to_chroma_metadata(self) -> Dict[str, Any]:
+        """
+        Convert to ChromaDB metadata format.
+
+        ChromaDB metadata must be JSON-serializable.
+        """
+        metadata = {
+            "frame_id": self.frame_id,
+            "video_file_id": self.video_file_id,
+            "frame_index": self.frame_index,
+            "timestamp_seconds": self.timestamp_seconds,
+            "ai_description": self.ai_description,
+            "ai_tags": json.dumps(self.ai_tags),
+            "extraction_method": self.extraction_method,
+            "analyzed_date": self.analyzed_date.isoformat(),
+            "analysis_version": self.analysis_version,
+        }
+
+        # Add optional fields only if they are not None
+        if self.ai_confidence is not None:
+            metadata["ai_confidence"] = self.ai_confidence
+        if self.frame_quality_score is not None:
+            metadata["frame_quality_score"] = self.frame_quality_score
+        if self.scene_change_indicator is not None:
+            metadata["scene_change_indicator"] = self.scene_change_indicator
+        if self.model_used is not None:
+            metadata["model_used"] = self.model_used
+
+        return metadata
+
+    @classmethod
+    def from_chroma_metadata(cls, frame_id: str, metadata: Dict[str, Any]) -> "VideoFrameDocument":
+        """
+        Create VideoFrameDocument from ChromaDB metadata.
+
+        Converts the stored metadata back to proper Python types.
+        """
+        return cls(
+            frame_id=frame_id,
+            video_file_id=metadata["video_file_id"],
+            frame_index=metadata["frame_index"],
+            timestamp_seconds=metadata["timestamp_seconds"],
+            ai_description=metadata.get("ai_description", ""),
+            ai_tags=json.loads(metadata.get("ai_tags", "[]")),
+            ai_confidence=metadata.get("ai_confidence"),
+            frame_quality_score=metadata.get("frame_quality_score"),
+            scene_change_indicator=metadata.get("scene_change_indicator"),
+            extraction_method=metadata.get("extraction_method", "time_interval"),
+            analyzed_date=datetime.fromisoformat(metadata["analyzed_date"]),
+            analysis_version=metadata.get("analysis_version", "1.0"),
+            model_used=metadata.get("model_used")
+        )
+
+    def to_searchable_text(self) -> str:
+        """
+        Generate searchable text content for ChromaDB document storage.
+
+        This text is used for full-text search capabilities.
+        """
+        parts = []
+
+        # Add description
+        if self.ai_description:
+            parts.append(self.ai_description)
+
+        # Add tags
+        if self.ai_tags:
+            parts.extend(self.ai_tags)
+
+        # Add frame context
+        parts.append(f"frame {self.frame_index}")
+        parts.append(f"timestamp {self.timestamp_seconds}s")
+        parts.append(f"video {self.video_file_id}")
+
+        return " ".join(parts)
+
+
+@dataclass
 class IndexingJob:
     """
     Represents an indexing job for tracking progress and history.
@@ -352,6 +469,7 @@ class PromptConfiguration:
 
 # Collection names for ChromaDB
 MEDIA_COLLECTION_NAME = "media_embeddings"
+FRAME_COLLECTION_NAME = "video_frame_embeddings"
 JOBS_COLLECTION_NAME = "indexing_jobs"
 PROMPT_TEMPLATES_COLLECTION_NAME = "prompt_templates"
 
@@ -373,12 +491,37 @@ METADATA_FIELDS = [
     "index_version"
 ]
 
+# Frame metadata field names
+FRAME_METADATA_FIELDS = [
+    "frame_id",
+    "video_file_id",
+    "frame_index",
+    "timestamp_seconds",
+    "ai_description",
+    "ai_tags",
+    "ai_confidence",
+    "frame_quality_score",
+    "scene_change_indicator",
+    "extraction_method",
+    "analyzed_date",
+    "analysis_version",
+    "model_used"
+]
+
 # Searchable fields for filtering
 SEARCHABLE_FIELDS = [
     "media_type",
     "format",
     "ai_tags",
     "file_name"
+]
+
+# Searchable fields for frame filtering
+FRAME_SEARCHABLE_FIELDS = [
+    "video_file_id",
+    "ai_tags",
+    "extraction_method",
+    "analysis_version"
 ]
 
 # Prompt template metadata field names

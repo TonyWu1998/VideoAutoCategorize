@@ -29,11 +29,31 @@ import {
   MediaType as PromptMediaType
 } from '../types/prompts';
 
+// Ollama Models API Types
+export interface OllamaModelInfo {
+  name: string;
+  size?: string;
+  modified_at?: string;
+  digest?: string;
+  details?: Record<string, any>;
+}
+
+export interface AvailableModelsResponse {
+  success: boolean;
+  models: OllamaModelInfo[];
+  vision_models: string[];
+  embedding_models: string[];
+  total_count: number;
+  ollama_connected: boolean;
+  message?: string;
+}
+
 // API configuration
 const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:8000';
-const API_TIMEOUT = 30000; // 30 seconds
+const API_TIMEOUT = 30000; // 30 seconds for regular operations
+const LONG_RUNNING_TIMEOUT = 0; // No timeout for long-running operations like video analysis
 
-// Create axios instance
+// Create axios instance for regular operations
 const apiClient: AxiosInstance = axios.create({
   baseURL: API_BASE_URL,
   timeout: API_TIMEOUT,
@@ -42,38 +62,54 @@ const apiClient: AxiosInstance = axios.create({
   },
 });
 
-// Request interceptor for logging
-apiClient.interceptors.request.use(
-  (config) => {
-    console.log(`API Request: ${config.method?.toUpperCase()} ${config.url}`);
-    return config;
+// Create axios instance for long-running operations (no timeout)
+const longRunningApiClient: AxiosInstance = axios.create({
+  baseURL: API_BASE_URL,
+  timeout: LONG_RUNNING_TIMEOUT,
+  headers: {
+    'Content-Type': 'application/json',
   },
-  (error) => {
-    console.error('API Request Error:', error);
-    return Promise.reject(error);
-  }
-);
+});
 
-// Response interceptor for error handling
-apiClient.interceptors.response.use(
-  (response: AxiosResponse) => {
-    return response;
-  },
-  (error) => {
-    console.error('API Response Error:', error.response?.data || error.message);
-    
-    // Handle common error cases
-    if (error.response?.status === 404) {
-      throw new Error('Resource not found');
-    } else if (error.response?.status === 500) {
-      throw new Error('Internal server error');
-    } else if (error.code === 'ECONNREFUSED') {
-      throw new Error('Cannot connect to server. Please ensure the backend is running.');
+// Setup interceptors for both clients
+const setupInterceptors = (client: AxiosInstance) => {
+  // Request interceptor for logging
+  client.interceptors.request.use(
+    (config) => {
+      console.log(`API Request: ${config.method?.toUpperCase()} ${config.url}`);
+      return config;
+    },
+    (error) => {
+      console.error('API Request Error:', error);
+      return Promise.reject(error);
     }
-    
-    throw error;
-  }
-);
+  );
+
+  // Response interceptor for error handling
+  client.interceptors.response.use(
+    (response: AxiosResponse) => {
+      return response;
+    },
+    (error) => {
+      console.error('API Response Error:', error.response?.data || error.message);
+
+      // Handle common error cases
+      if (error.response?.status === 404) {
+        throw new Error('Resource not found');
+      } else if (error.response?.status === 500) {
+        throw new Error('Internal server error');
+      } else if (error.code === 'ECONNREFUSED') {
+        throw new Error('Cannot connect to server. Please ensure the backend is running.');
+      }
+
+      throw error;
+    }
+  );
+};
+
+// Apply interceptors to both clients
+setupInterceptors(apiClient);
+setupInterceptors(longRunningApiClient);
 
 // Search API
 export const searchAPI = {
@@ -273,6 +309,23 @@ export const mediaAPI = {
     return response.data;
   },
 
+  /**
+   * Get video frame URLs
+   */
+  getVideoFrames: async (fileId: string, frameCount: number = 5, size: number = 300) => {
+    const response = await apiClient.get(`/api/media/${fileId}/frames`, {
+      params: { frame_count: frameCount, size }
+    });
+    return response.data;
+  },
+
+  /**
+   * Get video frame URL
+   */
+  getVideoFrameUrl: (fileId: string, frameIndex: number, size: number = 300): string => {
+    return `${API_BASE_URL}/api/media/${fileId}/frame/${frameIndex}?size=${size}`;
+  },
+
   // =============================================================================
   // LIBRARY MANAGEMENT
   // =============================================================================
@@ -337,14 +390,14 @@ export const mediaAPI = {
 // Indexing API
 export const indexingAPI = {
   /**
-   * Start indexing operation
+   * Start indexing operation (uses long-running client for no timeout)
    */
   startIndexing: async (request: IndexingRequest): Promise<void> => {
-    await apiClient.post('/api/index/start', request);
+    await longRunningApiClient.post('/api/index/start', request);
   },
 
   /**
-   * Get indexing status
+   * Get indexing status (uses regular client for quick status checks)
    */
   getStatus: async (): Promise<IndexingStatusResponse> => {
     const response = await apiClient.get<IndexingStatusResponse>('/api/index/status');
@@ -352,7 +405,7 @@ export const indexingAPI = {
   },
 
   /**
-   * Control indexing operation
+   * Control indexing operation (uses regular client for control commands)
    */
   controlIndexing: async (action: string, jobId?: string): Promise<void> => {
     await apiClient.post('/api/index/control', {
@@ -380,10 +433,10 @@ export const indexingAPI = {
   },
 
   /**
-   * Reindex specific files
+   * Reindex specific files (uses long-running client for no timeout)
    */
   reindexFiles: async (fileIds: string[]): Promise<void> => {
-    await apiClient.post('/api/index/reindex', fileIds);
+    await longRunningApiClient.post('/api/index/reindex', fileIds);
   },
 
   /**
@@ -482,6 +535,14 @@ export const configAPI = {
    */
   resetLLMConfig: async () => {
     const response = await apiClient.post('/api/config/llm/reset');
+    return response.data;
+  },
+
+  /**
+   * Get available Ollama models
+   */
+  getAvailableModels: async (): Promise<AvailableModelsResponse> => {
+    const response = await apiClient.get('/api/config/ollama/models');
     return response.data;
   },
 };

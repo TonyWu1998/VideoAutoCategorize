@@ -12,6 +12,7 @@ import MediaGallery from './components/MediaGallery';
 import SettingsPanel from './components/SettingsPanel';
 import StatusBar from './components/StatusBar';
 import TaskProgressDashboard from './components/TaskProgressDashboard';
+import IndexingNotifications from './components/IndexingNotifications';
 import { useSearchStore } from './store/searchStore';
 
 // Create Material-UI theme
@@ -83,12 +84,17 @@ const queryClient = new QueryClient({
 });
 
 function App() {
-  const { searchResults, isLoading, isLoadingAll, error, loadAllMedia } = useSearchStore();
+  const { searchResults, isLoading, isLoadingAll, error, loadAllMedia, startIndexingMonitor } = useSearchStore();
 
   // Load all media on app initialization
   useEffect(() => {
     loadAllMedia();
   }, [loadAllMedia]);
+
+  // Start indexing monitor on app initialization to catch any ongoing indexing
+  useEffect(() => {
+    startIndexingMonitor();
+  }, [startIndexingMonitor]);
 
   return (
     <QueryClientProvider client={queryClient}>
@@ -132,6 +138,9 @@ function App() {
 
         {/* Task Progress Dashboard */}
         <TaskProgressDashboard />
+
+        {/* Indexing Notifications */}
+        <IndexingNotifications />
       </ThemeProvider>
     </QueryClientProvider>
   );

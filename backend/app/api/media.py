@@ -223,7 +223,7 @@ async def get_video_frames(
         if not frame_paths:
             raise HTTPException(status_code=404, detail="Video frames not found")
 
-        # Return URLs for the frames
+        # Return relative URLs for the frames (frontend will add base URL)
         base_url = f"/api/media/{file_id}/frame"
         frame_urls = [f"{base_url}/{i}?size={size}" for i in range(len(frame_paths))]
 

@@ -28,6 +28,7 @@ import {
   Schedule as ScheduleIcon,
 } from '@mui/icons-material';
 import { indexingAPI } from '../services/api';
+import { useSearchStore } from '../store/searchStore';
 
 interface IndexingProgress {
   total_files: number;
@@ -63,6 +64,7 @@ const TaskProgressDashboard: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const { refreshData } = useSearchStore();
 
   // Poll for status updates
   useEffect(() => {
@@ -83,17 +85,43 @@ const TaskProgressDashboard: React.FC = () => {
     // Initial fetch
     fetchStatus();
 
-    // Set up polling interval (every 2 seconds when active, every 10 seconds when idle)
-    const pollInterval = status?.status && status.status !== 'idle' ? 2000 : 10000;
-    const interval = setInterval(fetchStatus, pollInterval);
+    // Set up polling interval with dynamic adjustment
+    let interval: NodeJS.Timeout;
 
-    return () => clearInterval(interval);
+    const setupPolling = () => {
+      // Clear any existing interval
+      if (interval) {
+        clearInterval(interval);
+      }
+
+      // Determine polling frequency based on current status
+      const isActive = status?.status && status.status !== 'idle' && status.status !== 'completed' && status.status !== 'failed' && status.status !== 'cancelled';
+      const pollInterval = isActive ? 1000 : 5000; // 1 second when active, 5 seconds when idle
+
+      interval = setInterval(fetchStatus, pollInterval);
+    };
+
+    setupPolling();
+
+    return () => {
+      if (interval) {
+        clearInterval(interval);
+      }
+    };
   }, [status?.status]);
 
-  const handleRefresh = () => {
+  const handleRefresh = async () => {
     setError(null);
     // Trigger immediate refresh by clearing status
     setStatus(null);
+
+    // Also refresh the search store data
+    try {
+      await refreshData();
+      console.log('Manual refresh: Search store data refreshed');
+    } catch (refreshError) {
+      console.error('Manual refresh: Failed to refresh search store data:', refreshError);
+    }
   };
 
   const handleCancel = async () => {
@@ -148,10 +176,20 @@ const TaskProgressDashboard: React.FC = () => {
   };
 
   const calculateProgress = (progress?: IndexingProgress) => {
-    if (!progress || progress.total_files === 0) return 0;
+    if (!progress || progress.total_files === 0) {
+      console.debug('Progress calculation: no progress or zero total files', progress);
+      return 0;
+    }
 
     // Base progress from completed files
     const baseProgress = progress.processed_files / progress.total_files;
+    console.debug('Progress calculation:', {
+      processed_files: progress.processed_files,
+      total_files: progress.total_files,
+      baseProgress: baseProgress,
+      successful_files: progress.successful_files,
+      failed_files: progress.failed_files
+    });
 
     // Add fractional progress from current file's frame processing
     if (progress.current_file_frames_total &&
@@ -160,10 +198,20 @@ const TaskProgressDashboard: React.FC = () => {
 
       const currentFileProgress = progress.current_file_frames_processed / progress.current_file_frames_total;
       const fractionalProgress = currentFileProgress / progress.total_files;
-      return Math.min((baseProgress + fractionalProgress) * 100, 100);
+      const totalProgress = Math.min((baseProgress + fractionalProgress) * 100, 100);
+      console.debug('Frame-level progress added:', {
+        current_file_frames_processed: progress.current_file_frames_processed,
+        current_file_frames_total: progress.current_file_frames_total,
+        currentFileProgress,
+        fractionalProgress,
+        totalProgress
+      });
+      return totalProgress;
     }
 
-    return baseProgress * 100;
+    const finalProgress = baseProgress * 100;
+    console.debug('Final progress:', finalProgress);
+    return finalProgress;
   };
 
   // Don't show dashboard if no active tasks and not expanded
@@ -381,18 +429,30 @@ const TaskProgressDashboard: React.FC = () => {
               )}
 
               {/* Actions */}
-              {status.status === 'processing' || status.status === 'scanning' ? (
+              <Stack direction="row" spacing={1}>
+                {status.status === 'processing' || status.status === 'scanning' ? (
+                  <Button
+                    variant="outlined"
+                    color="error"
+                    size="small"
+                    startIcon={<CancelIcon />}
+                    onClick={handleCancel}
+                    sx={{ flex: 1 }}
+                  >
+                    Cancel Job
+                  </Button>
+                ) : null}
+
                 <Button
                   variant="outlined"
-                  color="error"
                   size="small"
-                  startIcon={<CancelIcon />}
-                  onClick={handleCancel}
-                  fullWidth
+                  startIcon={<RefreshIcon />}
+                  onClick={handleRefresh}
+                  sx={{ flex: status.status === 'processing' || status.status === 'scanning' ? 0 : 1 }}
                 >
-                  Cancel Job
+                  Refresh
                 </Button>
-              ) : null}
+              </Stack>
 
               {/* Last Updated */}
               {lastUpdated && (

@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Frame Preview Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+        }
+        .frame-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+        .frame-item {
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .frame-item img {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        .frame-info {
+            padding: 10px;
+            background: #f5f5f5;
+            font-size: 12px;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+        .info { background: #d1ecf1; color: #0c5460; }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover { background: #0056b3; }
+        .loading { opacity: 0.6; }
+    </style>
+</head>
+<body>
+    <h1>Video Frame Preview Test</h1>
+    <p>Testing video frame preview functionality for the Media Semantic Search application.</p>
+
+    <div class="test-section">
+        <h2>API Configuration Test</h2>
+        <button onclick="testAPIConfig()">Test API Configuration</button>
+        <div id="api-config-status"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>Backend Health Check</h2>
+        <button onclick="testBackendHealth()">Check Backend Health</button>
+        <div id="health-status"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>Video Frames API Test</h2>
+        <button onclick="testVideoFramesAPI()">Test Video Frames API</button>
+        <div id="frames-api-status"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>Video Frame Preview</h2>
+        <p>Testing with video file ID: <code>0ca6457c-eda5-4fff-9223-c1cebeaf9c14</code></p>
+        <button onclick="loadVideoFrames()">Load Video Frames</button>
+        <div id="frames-status"></div>
+        <div id="frames-container" class="frame-grid"></div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000';
+        const TEST_VIDEO_ID = '0ca6457c-eda5-4fff-9223-c1cebeaf9c14';
+
+        function showStatus(elementId, message, type = 'info') {
+            const element = document.getElementById(elementId);
+            element.innerHTML = `<div class="status ${type}">${message}</div>`;
+        }
+
+        async function testAPIConfig() {
+            showStatus('api-config-status', 'Testing API configuration...', 'info');
+            
+            try {
+                const response = await fetch(`${API_BASE}/api`);
+                if (response.ok) {
+                    const data = await response.json();
+                    showStatus('api-config-status', `✅ API Configuration OK<br>
+                        <strong>API Name:</strong> ${data.name}<br>
+                        <strong>Version:</strong> ${data.version}<br>
+                        <strong>Base URL:</strong> ${API_BASE}`, 'success');
+                } else {
+                    showStatus('api-config-status', `❌ API Configuration Error: ${response.status}`, 'error');
+                }
+            } catch (error) {
+                showStatus('api-config-status', `❌ API Configuration Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function testBackendHealth() {
+            showStatus('health-status', 'Checking backend health...', 'info');
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/health`);
+                if (response.ok) {
+                    const data = await response.json();
+                    showStatus('health-status', `✅ Backend Health OK<br>
+                        <strong>Status:</strong> ${data.status}<br>
+                        <strong>Database:</strong> ${data.database?.status || 'Unknown'}<br>
+                        <strong>Ollama:</strong> ${data.ollama?.status || 'Unknown'}`, 'success');
+                } else {
+                    showStatus('health-status', `❌ Backend Health Error: ${response.status}`, 'error');
+                }
+            } catch (error) {
+                showStatus('health-status', `❌ Backend Health Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function testVideoFramesAPI() {
+            showStatus('frames-api-status', 'Testing video frames API...', 'info');
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/media/${TEST_VIDEO_ID}/frames?frame_count=5&size=300`);
+                if (response.ok) {
+                    const data = await response.json();
+                    showStatus('frames-api-status', `✅ Video Frames API OK<br>
+                        <strong>File ID:</strong> ${data.file_id}<br>
+                        <strong>Frame Count:</strong> ${data.frame_count}<br>
+                        <strong>Frame URLs:</strong> ${data.frame_urls.length} URLs returned`, 'success');
+                } else {
+                    showStatus('frames-api-status', `❌ Video Frames API Error: ${response.status}`, 'error');
+                }
+            } catch (error) {
+                showStatus('frames-api-status', `❌ Video Frames API Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function loadVideoFrames() {
+            showStatus('frames-status', 'Loading video frames...', 'info');
+            const container = document.getElementById('frames-container');
+            container.innerHTML = '';
+            
+            try {
+                // Get frame URLs from API
+                const response = await fetch(`${API_BASE}/api/media/${TEST_VIDEO_ID}/frames?frame_count=5&size=300`);
+                if (!response.ok) {
+                    throw new Error(`API Error: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                showStatus('frames-status', `✅ Loaded ${data.frame_count} frame URLs. Loading images...`, 'success');
+                
+                // Create frame elements
+                data.frame_urls.forEach((relativeUrl, index) => {
+                    const absoluteUrl = `${API_BASE}${relativeUrl}`;
+                    
+                    const frameDiv = document.createElement('div');
+                    frameDiv.className = 'frame-item';
+                    
+                    const img = document.createElement('img');
+                    img.src = absoluteUrl;
+                    img.alt = `Frame ${index + 1}`;
+                    img.onload = () => {
+                        console.log(`Frame ${index + 1} loaded successfully`);
+                    };
+                    img.onerror = () => {
+                        console.error(`Frame ${index + 1} failed to load`);
+                        img.alt = `❌ Frame ${index + 1} failed to load`;
+                        img.style.background = '#f8d7da';
+                        img.style.color = '#721c24';
+                        img.style.padding = '20px';
+                        img.style.textAlign = 'center';
+                    };
+                    
+                    const info = document.createElement('div');
+                    info.className = 'frame-info';
+                    info.innerHTML = `
+                        <strong>Frame ${index + 1}</strong><br>
+                        <small>URL: ${absoluteUrl}</small>
+                    `;
+                    
+                    frameDiv.appendChild(img);
+                    frameDiv.appendChild(info);
+                    container.appendChild(frameDiv);
+                });
+                
+            } catch (error) {
+                showStatus('frames-status', `❌ Failed to load video frames: ${error.message}`, 'error');
+            }
+        }
+
+        // Auto-run tests on page load
+        window.onload = function() {
+            testAPIConfig();
+            testBackendHealth();
+        };
+    </script>
+</body>
+</html>

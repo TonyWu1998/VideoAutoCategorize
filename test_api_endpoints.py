@@ -56,7 +56,7 @@ def main():
         
         # Config endpoints
         ("GET", "/api/config/llm"),
-        ("PUT", "/api/config/llm", {"max_video_frames": 12, "ollama_model": "gemma3:4b"}),
+        ("PUT", "/api/config/llm", {"video_frame_interval": 45, "ollama_model": "gemma3:4b"}),
         ("GET", "/api/config/llm"),  # Verify the update worked
         ("POST", "/api/config/llm/reset"),
         ("GET", "/api/config/llm"),  # Verify reset worked

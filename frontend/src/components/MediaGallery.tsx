@@ -58,6 +58,9 @@ const MediaGallery: React.FC<MediaGalleryProps> = ({ results, loading }) => {
     selectItem,
     deselectItem,
     findSimilar,
+    removeItemFromState,
+    refreshData,
+    checkIndexingStatusOnce,
   } = useSearchStore();
 
   const [selectedMedia, setSelectedMedia] = useState<MediaItem | null>(null);
@@ -79,8 +82,11 @@ const MediaGallery: React.FC<MediaGalleryProps> = ({ results, loading }) => {
     mutationFn: async (fileId: string) => {
       await mediaAPI.deleteFiles([fileId], false, false);
     },
-    onSuccess: () => {
-      // Invalidate and refetch search results
+    onSuccess: (_, fileId) => {
+      // Remove item from store state immediately
+      removeItemFromState(fileId);
+
+      // Invalidate and refetch search results (for other components)
       queryClient.invalidateQueries({ queryKey: ['search'] });
       queryClient.invalidateQueries({ queryKey: ['media'] });
       setDeleteConfirmOpen(false);
@@ -97,13 +103,20 @@ const MediaGallery: React.FC<MediaGalleryProps> = ({ results, loading }) => {
     mutationFn: async (fileIds: string[]) => {
       return await indexingAPI.reindexFiles(fileIds);
     },
-    onSuccess: (_, fileIds) => {
+    onSuccess: async (_, fileIds) => {
       // Show success message
       setSnackbar({
         open: true,
         message: `Successfully started reindexing ${fileIds.length} file${fileIds.length > 1 ? 's' : ''}`,
         severity: 'success'
       });
+
+      // Check if indexing is now active and start monitoring if needed
+      try {
+        await checkIndexingStatusOnce();
+      } catch (error) {
+        console.error('Failed to check indexing status after reindexing:', error);
+      }
 
       // Remove from reindexing set after a delay to show completion
       setTimeout(() => {
@@ -112,9 +125,9 @@ const MediaGallery: React.FC<MediaGalleryProps> = ({ results, loading }) => {
           fileIds.forEach(id => newSet.delete(id));
           return newSet;
         });
-      }, 2000);
+      }, 3000); // Increased delay to allow for indexing to start
 
-      // Refresh the media list after reindexing
+      // Also invalidate React Query cache for other components
       queryClient.invalidateQueries({ queryKey: ['search'] });
       queryClient.invalidateQueries({ queryKey: ['media'] });
     },

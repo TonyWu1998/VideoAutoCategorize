@@ -111,7 +111,8 @@ class LLMService:
             logger.error(f"🖼️ Returning error result: {error_result}")
             return error_result
     
-    async def analyze_video(self, video_path: str, progress_callback=None) -> Dict[str, Any]:
+    async def analyze_video(self, video_path: str, progress_callback=None,
+                           store_frames: bool = True, video_file_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Analyze a video by extracting key frames and analyzing them.
 
@@ -119,18 +120,27 @@ class LLMService:
             video_path: Path to the video file
             progress_callback: Optional callback function for frame progress updates
                              Signature: callback(current_frame: int, total_frames: int, activity: str)
+            store_frames: Whether to store individual frame analysis results (default: True)
+            video_file_id: ID of the video file for frame storage (required if store_frames=True)
 
         Returns:
-            Dictionary containing analysis results
+            Dictionary containing analysis results with frame storage information
         """
         try:
             logger.info(f"🎬 Starting video analysis for: {video_path}")
             start_time = time.time()
 
-            # Extract key frames from video
+            # Extract key frames from video with timing information
             logger.info(f"🎬 Extracting frames from video: {video_path}")
-            frames = await self._extract_video_frames(video_path)
-            logger.info(f"🎬 Extracted {len(frames)} frames from video")
+            if store_frames:
+                frame_data = await self._extract_video_frames_with_timing(video_path)
+                frames = [frame['base64'] for frame in frame_data]
+                logger.info(f"🎬 Extracted {len(frames)} frames with timing data from video")
+            else:
+                frames = await self._extract_video_frames(video_path)
+                frame_data = [{'base64': frame, 'timestamp': i * settings.VIDEO_FRAME_INTERVAL, 'index': i}
+                             for i, frame in enumerate(frames)]
+                logger.info(f"🎬 Extracted {len(frames)} frames from video")
 
             if not frames:
                 logger.error(f"🎬 No frames could be extracted from video: {video_path}")
@@ -139,15 +149,20 @@ class LLMService:
             # Analyze each frame
             logger.info(f"🎬 Starting analysis of {len(frames)} frames")
             frame_analyses = []
+            frame_documents = []
 
             # Report initial progress
             if progress_callback:
                 progress_callback(0, len(frames), "Starting frame analysis")
 
-            for i, frame_base64 in enumerate(frames):
+            for i, frame_info in enumerate(frame_data):
                 try:
                     current_frame = i + 1
-                    logger.info(f"🎬 Analyzing frame {current_frame}/{len(frames)}")
+                    frame_base64 = frame_info['base64']
+                    timestamp = frame_info['timestamp']
+                    frame_index = frame_info['index']
+
+                    logger.info(f"🎬 Analyzing frame {current_frame}/{len(frames)} at {timestamp:.1f}s")
 
                     # Update progress callback
                     if progress_callback:
@@ -155,6 +170,15 @@ class LLMService:
 
                     analysis = await self._analyze_with_llm(frame_base64, "video_frame")
                     frame_analyses.append(analysis)
+
+                    # Store individual frame if requested
+                    if store_frames and video_file_id:
+                        frame_document = await self._create_frame_document(
+                            video_file_id, frame_index, timestamp, analysis
+                        )
+                        if frame_document:
+                            frame_documents.append(frame_document)
+
                     logger.info(f"🎬 Successfully analyzed frame {current_frame}/{len(frames)}")
 
                     # Update progress callback after completion
@@ -184,6 +208,15 @@ class LLMService:
 
             embedding = await self._generate_embedding(combined_result["description"])
 
+            # Store frame documents if requested
+            stored_frame_count = 0
+            if store_frames and frame_documents:
+                if progress_callback:
+                    progress_callback(len(frames), len(frames), "Storing frame analysis data")
+
+                stored_frame_count = await self._store_frame_documents(frame_documents)
+                logger.info(f"🎬 Stored {stored_frame_count} frame documents")
+
             processing_time = time.time() - start_time
             logger.info(f"🎬 Video analysis completed successfully in {processing_time:.2f}s")
 
@@ -194,6 +227,8 @@ class LLMService:
                 "embedding": embedding,
                 "processing_time": processing_time,
                 "frames_analyzed": len(frame_analyses),
+                "frames_stored": stored_frame_count,
+                "frame_storage_enabled": store_frames,
                 "model_used": self.model
             }
             logger.info(f"🎬 Returning video analysis result with {len(result['tags'])} tags")
@@ -288,17 +323,22 @@ class LLMService:
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             duration = total_frames / fps if fps > 0 else 0
             
-            # Calculate frame extraction interval
+            # Calculate frame extraction interval based on time
             interval_seconds = settings.VIDEO_FRAME_INTERVAL
-            max_frames = settings.MAX_VIDEO_FRAMES
-            
+
             if duration > 0:
-                # Extract frames at regular intervals
+                # Extract frames at regular time intervals
                 frame_interval = max(1, int(fps * interval_seconds))
-                frame_indices = list(range(0, total_frames, frame_interval))[:max_frames]
+                frame_indices = list(range(0, total_frames, frame_interval))
+
+                # Log the calculated frame extraction details
+                calculated_frames = len(frame_indices)
+                logger.info(f"Video duration: {duration:.2f}s, FPS: {fps:.2f}, "
+                           f"Interval: {interval_seconds}s, Calculated frames: {calculated_frames}")
             else:
-                # Fallback: extract first few frames
-                frame_indices = list(range(min(max_frames, total_frames)))
+                # Fallback: extract first frame only if duration cannot be determined
+                frame_indices = [0] if total_frames > 0 else []
+                logger.warning(f"Could not determine video duration, extracting first frame only")
             
             for frame_idx in frame_indices:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
@@ -758,42 +798,114 @@ Tags:"""
 
     async def _combine_frame_analyses(self, frame_analyses: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Combine analysis results from multiple video frames.
-        
+        Enhanced combination of analysis results from multiple video frames.
+
+        Uses intelligent aggregation to preserve important information while
+        creating a coherent video-level description.
+
         Args:
             frame_analyses: List of frame analysis results
-            
+
         Returns:
-            Combined analysis result
+            Enhanced combined analysis result with frame statistics
         """
         if not frame_analyses:
             return {"description": "", "tags": [], "confidence": 0.0}
-        
-        # Combine descriptions
+
+        # Enhanced description combination
         descriptions = [analysis["description"] for analysis in frame_analyses if analysis["description"]]
-        combined_description = " ".join(descriptions[:3])  # Use first 3 descriptions
-        
-        # Combine and count tags
+
+        if len(descriptions) <= 3:
+            # Use all descriptions for short videos
+            combined_description = " ".join(descriptions)
+        else:
+            # For longer videos, use strategic sampling
+            # Take first, middle, and last descriptions, plus highest confidence ones
+            confidences = [analysis.get("confidence", 0) for analysis in frame_analyses]
+            high_conf_indices = sorted(range(len(confidences)), key=lambda i: confidences[i], reverse=True)[:2]
+
+            selected_descriptions = []
+            selected_descriptions.append(descriptions[0])  # First frame
+            if len(descriptions) > 2:
+                selected_descriptions.append(descriptions[len(descriptions)//2])  # Middle frame
+                selected_descriptions.append(descriptions[-1])  # Last frame
+
+            # Add high-confidence descriptions if not already included
+            for idx in high_conf_indices:
+                if idx < len(descriptions) and descriptions[idx] not in selected_descriptions:
+                    selected_descriptions.append(descriptions[idx])
+                    if len(selected_descriptions) >= 5:  # Limit to 5 descriptions
+                        break
+
+            combined_description = " ".join(selected_descriptions)
+
+        # Enhanced tag combination with frequency weighting
         tag_counts = {}
+        tag_confidences = {}
         total_confidence = 0
-        
+        confidence_scores = []
+
         for analysis in frame_analyses:
-            total_confidence += analysis.get("confidence", 0)
+            frame_confidence = analysis.get("confidence", 0)
+            total_confidence += frame_confidence
+            confidence_scores.append(frame_confidence)
+
+            # Weight tags by frame confidence
             for tag in analysis.get("tags", []):
                 tag_counts[tag] = tag_counts.get(tag, 0) + 1
-        
-        # Select most common tags
-        sorted_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)
-        combined_tags = [tag for tag, count in sorted_tags[:15]]  # Top 15 tags
-        
-        # Calculate average confidence
-        avg_confidence = total_confidence / len(frame_analyses) if frame_analyses else 0
-        
+                # Track average confidence for each tag
+                if tag not in tag_confidences:
+                    tag_confidences[tag] = []
+                tag_confidences[tag].append(frame_confidence)
+
+        # Calculate tag scores (frequency * average confidence)
+        tag_scores = {}
+        for tag, count in tag_counts.items():
+            avg_tag_confidence = sum(tag_confidences[tag]) / len(tag_confidences[tag])
+            frequency_score = count / len(frame_analyses)  # Normalize by total frames
+            tag_scores[tag] = frequency_score * avg_tag_confidence
+
+        # Select top tags based on combined score
+        sorted_tags = sorted(tag_scores.items(), key=lambda x: x[1], reverse=True)
+        combined_tags = [tag for tag, score in sorted_tags[:20]]  # Increased to 20 tags
+
+        # Enhanced confidence calculation
+        if confidence_scores:
+            # Use weighted average with higher weight for higher confidence frames
+            weights = [max(0.1, score) for score in confidence_scores]  # Minimum weight 0.1
+            weighted_confidence = sum(score * weight for score, weight in zip(confidence_scores, weights))
+            total_weight = sum(weights)
+            avg_confidence = weighted_confidence / total_weight if total_weight > 0 else 0
+        else:
+            avg_confidence = 0
+
+        # Add frame analysis statistics
+        frame_stats = {
+            "total_frames": len(frame_analyses),
+            "frames_with_descriptions": len(descriptions),
+            "unique_tags": len(tag_counts),
+            "confidence_range": {
+                "min": min(confidence_scores) if confidence_scores else 0,
+                "max": max(confidence_scores) if confidence_scores else 0,
+                "std": self._calculate_std(confidence_scores) if len(confidence_scores) > 1 else 0
+            }
+        }
+
         return {
             "description": combined_description,
             "tags": combined_tags,
-            "confidence": avg_confidence
+            "confidence": avg_confidence,
+            "frame_statistics": frame_stats
         }
+
+    def _calculate_std(self, values: List[float]) -> float:
+        """Calculate standard deviation of a list of values."""
+        if len(values) < 2:
+            return 0.0
+
+        mean = sum(values) / len(values)
+        variance = sum((x - mean) ** 2 for x in values) / len(values)
+        return variance ** 0.5
     
     def _test_connection(self) -> None:
         """Test connection to Ollama service."""
@@ -828,3 +940,161 @@ Tags:"""
             logger.error(f"Failed to connect to Ollama: {e}")
             # Don't raise exception to allow startup without Ollama
             logger.warning("Continuing without Ollama connection - AI features may not work")
+
+    async def _extract_video_frames_with_timing(self, video_path: str) -> List[Dict[str, Any]]:
+        """
+        Extract key frames from video with timing information for frame storage.
+
+        Args:
+            video_path: Path to the video file
+
+        Returns:
+            List of dictionaries with frame data: {'base64': str, 'timestamp': float, 'index': int}
+        """
+        try:
+            frame_data = []
+            cap = cv2.VideoCapture(video_path)
+
+            if not cap.isOpened():
+                raise ValueError(f"Could not open video file: {video_path}")
+
+            # Get video properties
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            duration = total_frames / fps if fps > 0 else 0
+
+            # Calculate frame extraction interval based on time
+            interval_seconds = settings.VIDEO_FRAME_INTERVAL
+
+            if duration > 0:
+                # Extract frames at regular time intervals
+                frame_interval = max(1, int(fps * interval_seconds))
+                frame_indices = list(range(0, total_frames, frame_interval))
+
+                # Log the calculated frame extraction details
+                calculated_frames = len(frame_indices)
+                logger.info(f"Video duration: {duration:.2f}s, FPS: {fps:.2f}, "
+                           f"Interval: {interval_seconds}s, Calculated frames: {calculated_frames}")
+            else:
+                # Fallback: extract first frame only if duration cannot be determined
+                frame_indices = [0] if total_frames > 0 else []
+                logger.warning(f"Could not determine video duration, extracting first frame only")
+
+            for i, frame_idx in enumerate(frame_indices):
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+
+                if not ret:
+                    continue
+
+                # Calculate timestamp
+                timestamp = frame_idx / fps if fps > 0 else i * interval_seconds
+
+                # Convert BGR to RGB
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+                # Convert to PIL Image
+                pil_image = Image.fromarray(frame_rgb)
+
+                # Resize if necessary
+                max_dimension = settings.MAX_IMAGE_DIMENSION
+                if pil_image.width > max_dimension or pil_image.height > max_dimension:
+                    pil_image.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
+
+                # Convert to base64
+                buffer = io.BytesIO()
+                pil_image.save(buffer, format='JPEG', quality=settings.IMAGE_QUALITY)
+                frame_base64 = base64.b64encode(buffer.getvalue()).decode()
+
+                frame_data.append({
+                    'base64': frame_base64,
+                    'timestamp': timestamp,
+                    'index': i
+                })
+
+            cap.release()
+
+            logger.debug(f"Extracted {len(frame_data)} frames with timing data from video")
+            return frame_data
+
+        except Exception as e:
+            logger.error(f"Failed to extract frames with timing from video {video_path}: {e}")
+            return []
+
+    async def _create_frame_document(self, video_file_id: str, frame_index: int,
+                                   timestamp: float, analysis: Dict[str, Any]) -> Optional['VideoFrameDocument']:
+        """
+        Create a VideoFrameDocument from frame analysis results.
+
+        Args:
+            video_file_id: ID of the parent video
+            frame_index: Index of the frame in the video
+            timestamp: Timestamp of the frame in seconds
+            analysis: Analysis results from LLM
+
+        Returns:
+            VideoFrameDocument or None if creation fails
+        """
+        try:
+            from app.database.schemas import VideoFrameDocument
+            from datetime import datetime, timezone
+
+            # Generate frame ID
+            frame_id = f"{video_file_id}_frame_{frame_index}"
+
+            # Generate embedding for frame description
+            embedding = None
+            if analysis.get('description'):
+                embedding = await self._generate_embedding(analysis['description'])
+
+            # Create frame document
+            frame_document = VideoFrameDocument(
+                frame_id=frame_id,
+                video_file_id=video_file_id,
+                frame_index=frame_index,
+                timestamp_seconds=timestamp,
+                ai_description=analysis.get('description', ''),
+                ai_tags=analysis.get('tags', []),
+                ai_confidence=analysis.get('confidence'),
+                frame_quality_score=analysis.get('confidence'),  # Use confidence as quality indicator
+                extraction_method="time_interval",
+                analyzed_date=datetime.now(timezone.utc),
+                analysis_version="2.0",  # Frame-level storage version
+                model_used=self.model,
+                embedding=embedding
+            )
+
+            return frame_document
+
+        except Exception as e:
+            logger.error(f"Failed to create frame document for frame {frame_index}: {e}")
+            return None
+
+    async def _store_frame_documents(self, frame_documents: List['VideoFrameDocument']) -> int:
+        """
+        Store frame documents in the vector database.
+
+        Args:
+            frame_documents: List of VideoFrameDocument objects to store
+
+        Returns:
+            Number of successfully stored frame documents
+        """
+        try:
+            from app.database.vector_db import VectorDatabase
+
+            if not frame_documents:
+                return 0
+
+            # Initialize vector database
+            vector_db = VectorDatabase()
+
+            # Store frames in batch
+            stored_frame_ids = vector_db.add_frames_batch(frame_documents)
+
+            logger.info(f"Successfully stored {len(stored_frame_ids)} frame documents")
+            return len(stored_frame_ids)
+
+        except Exception as e:
+            logger.error(f"Failed to store frame documents: {e}")
+            return 0

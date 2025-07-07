@@ -4,8 +4,9 @@ API endpoints for application settings management.
 
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import logging
+import ollama
 
 from ..config import settings
 from ..services.llm_service import LLMService
@@ -17,7 +18,6 @@ router = APIRouter(prefix="", tags=["config"])
 
 class LLMConfigRequest(BaseModel):
     """Request model for LLM configuration updates."""
-    max_video_frames: Optional[int] = Field(None, ge=1, le=50, description="Maximum frames to extract from videos")
     video_frame_interval: Optional[int] = Field(None, ge=1, le=300, description="Frame extraction interval in seconds")
     max_image_dimension: Optional[int] = Field(None, ge=256, le=4096, description="Maximum image dimension in pixels")
     image_quality: Optional[int] = Field(None, ge=50, le=100, description="JPEG quality percentage")
@@ -31,7 +31,6 @@ class LLMConfigRequest(BaseModel):
 
 class LLMConfigResponse(BaseModel):
     """Response model for current LLM configuration."""
-    max_video_frames: int
     video_frame_interval: int
     max_image_dimension: int
     image_quality: int
@@ -50,12 +49,35 @@ class SettingsUpdateResponse(BaseModel):
     updated_settings: Dict[str, Any]
 
 
+class OllamaModelInfo(BaseModel):
+    """Information about an Ollama model."""
+    name: str
+    size: Optional[str] = None
+    modified_at: Optional[str] = None
+    digest: Optional[str] = None
+    details: Optional[Dict[str, Any]] = None
+
+    class Config:
+        # Allow extra fields and be more flexible with types
+        extra = "allow"
+
+
+class AvailableModelsResponse(BaseModel):
+    """Response model for available Ollama models."""
+    success: bool
+    models: List[OllamaModelInfo]
+    vision_models: List[str]
+    embedding_models: List[str]
+    total_count: int
+    ollama_connected: bool
+    message: Optional[str] = None
+
+
 @router.get("/llm", response_model=LLMConfigResponse)
 async def get_llm_config():
     """Get current LLM configuration."""
     try:
         return LLMConfigResponse(
-            max_video_frames=settings.MAX_VIDEO_FRAMES,
             video_frame_interval=settings.VIDEO_FRAME_INTERVAL,
             max_image_dimension=settings.MAX_IMAGE_DIMENSION,
             image_quality=settings.IMAGE_QUALITY,
@@ -78,10 +100,6 @@ async def update_llm_config(config: LLMConfigRequest):
         updated_settings = {}
         
         # Update settings that are provided
-        if config.max_video_frames is not None:
-            settings.MAX_VIDEO_FRAMES = config.max_video_frames
-            updated_settings["max_video_frames"] = config.max_video_frames
-            
         if config.video_frame_interval is not None:
             settings.VIDEO_FRAME_INTERVAL = config.video_frame_interval
             updated_settings["video_frame_interval"] = config.video_frame_interval
@@ -129,7 +147,6 @@ async def reset_llm_config():
     try:
         # Reset to default values from config
         default_settings = {
-            "max_video_frames": 10,
             "video_frame_interval": 30,
             "max_image_dimension": 1024,
             "image_quality": 85,
@@ -140,7 +157,6 @@ async def reset_llm_config():
         }
         
         # Apply default settings
-        settings.MAX_VIDEO_FRAMES = default_settings["max_video_frames"]
         settings.VIDEO_FRAME_INTERVAL = default_settings["video_frame_interval"]
         settings.MAX_IMAGE_DIMENSION = default_settings["max_image_dimension"]
         settings.IMAGE_QUALITY = default_settings["image_quality"]
@@ -160,6 +176,131 @@ async def reset_llm_config():
     except Exception as e:
         logger.error(f"Failed to reset LLM config: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to reset LLM configuration: {str(e)}")
+
+
+@router.get("/ollama/models", response_model=AvailableModelsResponse)
+async def get_available_ollama_models():
+    """Get list of available Ollama models."""
+    try:
+        logger.info("Fetching available Ollama models")
+
+        # Try to connect to Ollama
+        client = ollama.Client(host=settings.OLLAMA_BASE_URL)
+
+        try:
+            # Get models from Ollama
+            models_response = client.list()
+
+            # Handle different response formats
+            if hasattr(models_response, 'models'):
+                model_list = models_response.models
+            elif isinstance(models_response, dict) and 'models' in models_response:
+                model_list = models_response['models']
+            else:
+                model_list = models_response if isinstance(models_response, list) else []
+
+            # Parse model information
+            models = []
+            vision_models = []
+            embedding_models = []
+
+            for model in model_list:
+                # Extract model name
+                model_name = None
+                if hasattr(model, 'model'):
+                    model_name = model.model
+                elif hasattr(model, 'name'):
+                    model_name = model.name
+                elif isinstance(model, dict) and 'model' in model:
+                    model_name = model['model']
+                elif isinstance(model, dict) and 'name' in model:
+                    model_name = model['name']
+                elif isinstance(model, str):
+                    model_name = model
+
+                if not model_name:
+                    continue
+
+                # Extract additional model info
+                size = None
+                modified_at = None
+                digest = None
+                details = None
+
+                if isinstance(model, dict):
+                    size = model.get('size')
+                    modified_at = model.get('modified_at')
+                    digest = model.get('digest')
+                    details = model.get('details')
+                elif hasattr(model, 'size'):
+                    size = getattr(model, 'size', None)
+                    modified_at = getattr(model, 'modified_at', None)
+                    digest = getattr(model, 'digest', None)
+                    details = getattr(model, 'details', None)
+
+                # Convert data types to strings for consistency
+                size_str = str(size) if size is not None else None
+                modified_str = str(modified_at) if modified_at is not None else None
+                digest_str = str(digest) if digest is not None else None
+
+                # Ensure details is a dict or None
+                details_dict = details if isinstance(details, dict) else None
+
+                # Create model info
+                model_info = OllamaModelInfo(
+                    name=model_name,
+                    size=size_str,
+                    modified_at=modified_str,
+                    digest=digest_str,
+                    details=details_dict
+                )
+                models.append(model_info)
+
+                # Categorize models
+                model_lower = model_name.lower()
+
+                # Vision models (models that can process images)
+                if any(keyword in model_lower for keyword in [
+                    'llava', 'bakllava', 'gemma', 'minicpm', 'moondream',
+                    'vision', 'visual', 'multimodal', 'mm'
+                ]):
+                    vision_models.append(model_name)
+
+                # Embedding models
+                if any(keyword in model_lower for keyword in [
+                    'embed', 'embedding', 'nomic', 'minilm', 'bge', 'gte', 'e5'
+                ]):
+                    embedding_models.append(model_name)
+
+            logger.info(f"Found {len(models)} total models, {len(vision_models)} vision models, {len(embedding_models)} embedding models")
+
+            return AvailableModelsResponse(
+                success=True,
+                models=models,
+                vision_models=vision_models,
+                embedding_models=embedding_models,
+                total_count=len(models),
+                ollama_connected=True,
+                message=f"Successfully retrieved {len(models)} models from Ollama"
+            )
+
+        except Exception as ollama_error:
+            logger.warning(f"Failed to fetch models from Ollama: {ollama_error}")
+
+            # Return empty response with connection error
+            return AvailableModelsResponse(
+                success=False,
+                models=[],
+                vision_models=[],
+                embedding_models=[],
+                total_count=0,
+                ollama_connected=False,
+                message=f"Failed to connect to Ollama: {str(ollama_error)}"
+            )
+
+    except Exception as e:
+        logger.error(f"Failed to get available models: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve available models: {str(e)}")
 
 
 @router.get("/system")

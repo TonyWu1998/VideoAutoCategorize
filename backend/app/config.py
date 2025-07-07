@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "gemma3:4b"
     OLLAMA_EMBEDDING_MODEL: str = "nomic-embed-text"
-    OLLAMA_TIMEOUT: int = 120
+    OLLAMA_TIMEOUT: int = 1800  # 30 minutes for long video analysis
     OLLAMA_KEEP_ALIVE: int = 300
     
     # =============================================================================
@@ -32,10 +32,12 @@ class Settings(BaseSettings):
     # =============================================================================
     
     ALLOWED_ORIGINS: List[str] = [
-        "http://localhost:3000", 
-        "http://localhost:5173", 
-        "http://127.0.0.1:3000", 
-        "http://127.0.0.1:5173"
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174"
     ]
     API_V1_STR: str = "/api/v1"
     MAX_REQUEST_SIZE_MB: int = 100
@@ -54,7 +56,6 @@ class Settings(BaseSettings):
     MAX_IMAGE_DIMENSION: int = 1024
     IMAGE_QUALITY: int = 85
     VIDEO_FRAME_INTERVAL: int = 30
-    MAX_VIDEO_FRAMES: int = 10
     
     # =============================================================================
     # INDEXING CONFIGURATION

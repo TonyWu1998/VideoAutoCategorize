@@ -36,10 +36,12 @@ import {
   InsertDriveFile as FileIcon,
   Add as AddIcon,
   Delete as DeleteIcon,
+  Refresh as RefreshIcon,
 } from '@mui/icons-material';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { indexingAPI, healthAPI, configAPI } from '../services/api';
+import { indexingAPI, healthAPI, configAPI, AvailableModelsResponse } from '../services/api';
 import { defaultIndexingRequest } from '../types/indexing';
+import { useSearchStore } from '../store/searchStore';
 import PromptLibrary from './PromptLibrary';
 import PromptConfiguration from './PromptConfiguration';
 
@@ -74,7 +76,6 @@ const SettingsPanel: React.FC = () => {
 
   // LLM Configuration state
   const [llmConfig, setLlmConfig] = useState({
-    max_video_frames: 10,
     video_frame_interval: 30,
     max_image_dimension: 1024,
     image_quality: 85,
@@ -86,7 +87,11 @@ const SettingsPanel: React.FC = () => {
     max_tags_per_item: 10,
   });
 
+  // Available models state
+  const [availableModels, setAvailableModels] = useState<AvailableModelsResponse | null>(null);
+
   const queryClient = useQueryClient();
+  const { clearAllData, startIndexingMonitor } = useSearchStore();
 
   // Health check query
   const { data: healthData, isLoading: healthLoading } = useQuery({
@@ -117,6 +122,15 @@ const SettingsPanel: React.FC = () => {
     enabled: open,
   });
 
+  // Available models query
+  const { data: modelsData, isLoading: modelsLoading, error: modelsError } = useQuery({
+    queryKey: ['available-models'],
+    queryFn: configAPI.getAvailableModels,
+    enabled: open,
+    refetchInterval: 30000, // Refresh every 30 seconds to catch new models
+    retry: 2,
+  });
+
   // Update local state when config data changes
   useEffect(() => {
     if (llmConfigData) {
@@ -124,11 +138,64 @@ const SettingsPanel: React.FC = () => {
     }
   }, [llmConfigData]);
 
+  // Update available models when data changes
+  useEffect(() => {
+    if (modelsData) {
+      setAvailableModels(modelsData);
+    }
+  }, [modelsData]);
+
+  // Validate and provide fallback for models when available models change
+  useEffect(() => {
+    if (availableModels && availableModels.ollama_connected) {
+      let needsUpdate = false;
+      const updates: any = {};
+
+      // Validate vision model
+      if (llmConfig.ollama_model && !availableModels.vision_models.includes(llmConfig.ollama_model)) {
+        // Try to find a suitable fallback
+        const fallbackVisionModel = availableModels.vision_models.find(model =>
+          model.toLowerCase().includes('gemma') ||
+          model.toLowerCase().includes('llava') ||
+          model.toLowerCase().includes('vision')
+        ) || availableModels.vision_models[0];
+
+        if (fallbackVisionModel) {
+          updates.ollama_model = fallbackVisionModel;
+          needsUpdate = true;
+          console.warn(`Vision model '${llmConfig.ollama_model}' not available, falling back to '${fallbackVisionModel}'`);
+        }
+      }
+
+      // Validate embedding model
+      if (llmConfig.ollama_embedding_model && !availableModels.embedding_models.includes(llmConfig.ollama_embedding_model)) {
+        // Try to find a suitable fallback
+        const fallbackEmbeddingModel = availableModels.embedding_models.find(model =>
+          model.toLowerCase().includes('nomic') ||
+          model.toLowerCase().includes('embed')
+        ) || availableModels.embedding_models[0];
+
+        if (fallbackEmbeddingModel) {
+          updates.ollama_embedding_model = fallbackEmbeddingModel;
+          needsUpdate = true;
+          console.warn(`Embedding model '${llmConfig.ollama_embedding_model}' not available, falling back to '${fallbackEmbeddingModel}'`);
+        }
+      }
+
+      // Apply updates if needed
+      if (needsUpdate) {
+        setLlmConfig(prev => ({ ...prev, ...updates }));
+      }
+    }
+  }, [availableModels, llmConfig.ollama_model, llmConfig.ollama_embedding_model]);
+
   // Start indexing mutation
   const startIndexingMutation = useMutation({
     mutationFn: indexingAPI.startIndexing,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['indexing-status'] });
+      // Start monitoring indexing status for automatic UI updates
+      startIndexingMonitor();
     },
   });
 
@@ -145,6 +212,9 @@ const SettingsPanel: React.FC = () => {
   const clearDatabaseMutation = useMutation({
     mutationFn: indexingAPI.clearIndex,
     onSuccess: () => {
+      // Clear the search store data immediately
+      clearAllData();
+
       queryClient.invalidateQueries({ queryKey: ['search'] });
       queryClient.invalidateQueries({ queryKey: ['media'] });
       queryClient.invalidateQueries({ queryKey: ['indexing-status'] });
@@ -563,32 +633,9 @@ const SettingsPanel: React.FC = () => {
                   </Typography>
 
                   <Grid container spacing={3}>
-                    <Grid item xs={12} sm={6}>
+                    <Grid item xs={12}>
                       <Typography variant="body2" gutterBottom>
-                        Frames to Extract: {llmConfig.max_video_frames}
-                      </Typography>
-                      <Slider
-                        value={llmConfig.max_video_frames}
-                        onChange={(_, value) => handleLLMConfigChange('max_video_frames', value)}
-                        min={1}
-                        max={50}
-                        step={1}
-                        marks={[
-                          { value: 1, label: '1' },
-                          { value: 10, label: '10' },
-                          { value: 25, label: '25' },
-                          { value: 50, label: '50' }
-                        ]}
-                        valueLabelDisplay="auto"
-                      />
-                      <Typography variant="caption" color="text.secondary">
-                        Number of frames to extract from each video for analysis
-                      </Typography>
-                    </Grid>
-
-                    <Grid item xs={12} sm={6}>
-                      <Typography variant="body2" gutterBottom>
-                        Frame Interval: {llmConfig.video_frame_interval}s
+                        Frame Extraction Interval: {llmConfig.video_frame_interval}s
                       </Typography>
                       <Slider
                         value={llmConfig.video_frame_interval}
@@ -598,15 +645,33 @@ const SettingsPanel: React.FC = () => {
                         step={5}
                         marks={[
                           { value: 1, label: '1s' },
+                          { value: 15, label: '15s' },
                           { value: 30, label: '30s' },
                           { value: 60, label: '1m' },
+                          { value: 120, label: '2m' },
                           { value: 300, label: '5m' }
                         ]}
                         valueLabelDisplay="auto"
                       />
-                      <Typography variant="caption" color="text.secondary">
-                        Extract a frame every N seconds
+                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                        Extract a frame every {llmConfig.video_frame_interval} seconds. Frame count will be calculated automatically based on video duration.
                       </Typography>
+
+                      {/* Dynamic Frame Count Preview */}
+                      <Box sx={{ mt: 2, p: 2, bgcolor: 'background.paper', borderRadius: 1, border: '1px solid', borderColor: 'divider' }}>
+                        <Typography variant="body2" sx={{ fontWeight: 'medium', mb: 1 }}>
+                          Frame Count Examples:
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                          • 1-minute video: ~{Math.ceil(60 / llmConfig.video_frame_interval)} frames
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                          • 10-minute video: ~{Math.ceil(600 / llmConfig.video_frame_interval)} frames
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                          • 1-hour video: ~{Math.ceil(3600 / llmConfig.video_frame_interval)} frames
+                        </Typography>
+                      </Box>
                     </Grid>
                   </Grid>
                 </Box>
@@ -668,9 +733,20 @@ const SettingsPanel: React.FC = () => {
 
                 {/* Model Settings */}
                 <Box>
-                  <Typography variant="subtitle1" gutterBottom sx={{ fontWeight: 'bold' }}>
-                    AI Model Configuration
-                  </Typography>
+                  <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
+                    <Typography variant="subtitle1" sx={{ fontWeight: 'bold' }}>
+                      AI Model Configuration
+                    </Typography>
+                    <Button
+                      size="small"
+                      startIcon={<RefreshIcon />}
+                      onClick={() => queryClient.invalidateQueries({ queryKey: ['available-models'] })}
+                      disabled={modelsLoading}
+                      variant="outlined"
+                    >
+                      {modelsLoading ? 'Loading...' : 'Refresh Models'}
+                    </Button>
+                  </Box>
 
                   <Grid container spacing={3}>
                     <Grid item xs={12} sm={6}>
@@ -680,15 +756,45 @@ const SettingsPanel: React.FC = () => {
                           value={llmConfig.ollama_model}
                           onChange={(e) => handleLLMConfigChange('ollama_model', e.target.value)}
                           label="Vision Model"
+                          disabled={modelsLoading}
                         >
-                          <MenuItem value="gemma3:4b">Gemma3 4B</MenuItem>
-                          <MenuItem value="llava:7b">LLaVA 7B</MenuItem>
-                          <MenuItem value="llava:13b">LLaVA 13B</MenuItem>
-                          <MenuItem value="bakllava:7b">BakLLaVA 7B</MenuItem>
+                          {modelsLoading ? (
+                            <MenuItem disabled>
+                              <CircularProgress size={16} sx={{ mr: 1 }} />
+                              Loading models...
+                            </MenuItem>
+                          ) : modelsError || !availableModels?.ollama_connected ? (
+                            <MenuItem disabled>
+                              ⚠️ Ollama not connected
+                            </MenuItem>
+                          ) : availableModels?.vision_models.length > 0 ? (
+                            availableModels.vision_models.map((model) => (
+                              <MenuItem key={model} value={model}>
+                                {model}
+                              </MenuItem>
+                            ))
+                          ) : (
+                            <MenuItem disabled>
+                              No vision models available
+                            </MenuItem>
+                          )}
+                          {/* Show current model if it's not in the available list */}
+                          {llmConfig.ollama_model &&
+                           availableModels?.vision_models &&
+                           !availableModels.vision_models.includes(llmConfig.ollama_model) && (
+                            <MenuItem value={llmConfig.ollama_model} sx={{ color: 'warning.main' }}>
+                              {llmConfig.ollama_model} (not available)
+                            </MenuItem>
+                          )}
                         </Select>
                       </FormControl>
                       <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
                         AI model used for image and video analysis
+                        {availableModels && !availableModels.ollama_connected && (
+                          <Box component="span" sx={{ color: 'warning.main', display: 'block' }}>
+                            ⚠️ {availableModels.message || 'Ollama service not connected'}
+                          </Box>
+                        )}
                       </Typography>
                     </Grid>
 
@@ -699,14 +805,45 @@ const SettingsPanel: React.FC = () => {
                           value={llmConfig.ollama_embedding_model}
                           onChange={(e) => handleLLMConfigChange('ollama_embedding_model', e.target.value)}
                           label="Embedding Model"
+                          disabled={modelsLoading}
                         >
-                          <MenuItem value="nomic-embed-text">Nomic Embed Text</MenuItem>
-                          <MenuItem value="all-minilm">All MiniLM</MenuItem>
-                          <MenuItem value="mxbai-embed-large">MxBai Embed Large</MenuItem>
+                          {modelsLoading ? (
+                            <MenuItem disabled>
+                              <CircularProgress size={16} sx={{ mr: 1 }} />
+                              Loading models...
+                            </MenuItem>
+                          ) : modelsError || !availableModels?.ollama_connected ? (
+                            <MenuItem disabled>
+                              ⚠️ Ollama not connected
+                            </MenuItem>
+                          ) : availableModels?.embedding_models.length > 0 ? (
+                            availableModels.embedding_models.map((model) => (
+                              <MenuItem key={model} value={model}>
+                                {model}
+                              </MenuItem>
+                            ))
+                          ) : (
+                            <MenuItem disabled>
+                              No embedding models available
+                            </MenuItem>
+                          )}
+                          {/* Show current model if it's not in the available list */}
+                          {llmConfig.ollama_embedding_model &&
+                           availableModels?.embedding_models &&
+                           !availableModels.embedding_models.includes(llmConfig.ollama_embedding_model) && (
+                            <MenuItem value={llmConfig.ollama_embedding_model} sx={{ color: 'warning.main' }}>
+                              {llmConfig.ollama_embedding_model} (not available)
+                            </MenuItem>
+                          )}
                         </Select>
                       </FormControl>
                       <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
                         Model used for generating search embeddings
+                        {availableModels && !availableModels.ollama_connected && (
+                          <Box component="span" sx={{ color: 'warning.main', display: 'block' }}>
+                            ⚠️ {availableModels.message || 'Ollama service not connected'}
+                          </Box>
+                        )}
                       </Typography>
                     </Grid>
                   </Grid>

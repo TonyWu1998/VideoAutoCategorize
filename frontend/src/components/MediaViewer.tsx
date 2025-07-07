@@ -57,8 +57,14 @@ const MediaViewer: React.FC<MediaViewerProps> = ({ media, open, onClose }) => {
   const loadVideoFrames = async () => {
     try {
       setLoadingFrames(true);
-      const response = await apiClient.get(`/api/media/${media.file_id}/frames?frame_count=5&size=300`);
-      setVideoFrames(response.data.frame_urls || []);
+      const frameData = await mediaAPI.getVideoFrames(media.file_id, 5, 300);
+
+      // Convert relative URLs to absolute URLs
+      const absoluteFrameUrls = frameData.frame_urls.map((relativeUrl: string, index: number) => {
+        return mediaAPI.getVideoFrameUrl(media.file_id, index, 300);
+      });
+
+      setVideoFrames(absoluteFrameUrls);
     } catch (error) {
       console.error('Failed to load video frames:', error);
     } finally {

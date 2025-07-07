@@ -382,22 +382,26 @@ class IndexingService:
                     if not media_doc:
                         logger.warning(f"File not found in database: {file_id}")
                         job["progress"].failed_files += 1
+                        job["progress"].processed_files += 1  # Count as processed
                         continue
 
                     # Check if file still exists
                     if not Path(media_doc.file_path).exists():
                         logger.warning(f"File no longer exists: {media_doc.file_path}")
                         job["progress"].failed_files += 1
+                        job["progress"].processed_files += 1  # Count as processed
                         continue
 
                     # Re-analyze the file
                     await self._reindex_single_file(media_doc)
                     job["progress"].successful_files += 1
+                    job["progress"].processed_files += 1  # Count as processed
                     logger.info(f"✅ Successfully reindexed {media_doc.file_name}")
 
                 except Exception as e:
                     logger.error(f"Failed to reindex file {file_id}: {e}")
                     job["progress"].failed_files += 1
+                    job["progress"].processed_files += 1  # Count as processed
 
                 job["progress"].processed_files += 1
 
@@ -453,9 +457,12 @@ class IndexingService:
             if media_type == MediaType.IMAGE:
                 analysis_result = await self.llm_service.analyze_image(media_doc.file_path)
             else:
+                # Enable frame storage for video analysis
                 analysis_result = await self.llm_service.analyze_video(
                     media_doc.file_path,
-                    progress_callback=frame_progress_callback
+                    progress_callback=frame_progress_callback,
+                    store_frames=True,
+                    video_file_id=media_doc.file_id
                 )
 
             if not analysis_result or not analysis_result.get('description'):
@@ -521,15 +528,15 @@ class IndexingService:
             
             # Process files in batches
             batch_size = request.batch_size or settings.BATCH_SIZE
-            
+
             for i in range(0, len(filtered_files), batch_size):
                 if job["status"] == IndexingStatus.CANCELLED:
                     break
-                
+
                 batch = filtered_files[i:i + batch_size]
                 await self._process_file_batch(batch)
-                
-                job["progress"].processed_files += len(batch)
+
+                # Note: processed_files is updated within _process_file_batch for each file
             
             # Complete job
             job["status"] = IndexingStatus.COMPLETED
@@ -672,6 +679,21 @@ class IndexingService:
                     except Exception as e:
                         logger.warning(f"Could not get image dimensions for {file_path}: {e}")
 
+                # Update current file in progress tracking
+                if self.current_job:
+                    self.current_job["progress"].current_file = file_path
+                    self.current_job["progress"].current_file_frames_total = None
+                    self.current_job["progress"].current_file_frames_processed = None
+                    self.current_job["progress"].current_frame_activity = None
+
+                # Create progress callback for frame-level tracking
+                def frame_progress_callback(current_frame: int, total_frames: int, activity: str):
+                    if self.current_job:
+                        self.current_job["progress"].current_file_frames_total = total_frames
+                        self.current_job["progress"].current_file_frames_processed = current_frame
+                        self.current_job["progress"].current_frame_activity = activity
+                        logger.debug(f"Frame progress: {current_frame}/{total_frames} - {activity}")
+
                 # Analyze with AI based on media type
                 logger.info(f"📁 Analyzing {file_name} with AI...")
                 logger.info(f"📁 File extension: {file_ext}")
@@ -679,10 +701,19 @@ class IndexingService:
                 logger.info(f"📁 Supported video formats: {settings.SUPPORTED_VIDEO_FORMATS}")
                 logger.info(f"📁 Supported image formats: {settings.SUPPORTED_IMAGE_FORMATS}")
 
+                # Generate file ID for consistent storage
+                file_id = str(uuid.uuid4())
+
                 if media_type == MediaType.VIDEO:
                     logger.info(f"📁 ✅ Calling analyze_video for {file_name}")
-                    ai_result = await llm_service.analyze_video(file_path)
+                    ai_result = await llm_service.analyze_video(
+                        file_path,
+                        progress_callback=frame_progress_callback,
+                        store_frames=True,
+                        video_file_id=file_id
+                    )
                     logger.info(f"📁 Video analysis completed for {file_name}")
+                    logger.info(f"📁 Frames stored: {ai_result.get('frames_stored', 0)}")
                 else:
                     logger.info(f"📁 ✅ Calling analyze_image for {file_name}")
                     ai_result = await llm_service.analyze_image(file_path)
@@ -721,13 +752,12 @@ class IndexingService:
 
                     # Store in vector database
                     from app.database.schemas import MediaDocument
-                    import uuid
 
                     # Create dimensions string
                     dimensions = f"{width}x{height}" if width and height else None
 
                     document = MediaDocument(
-                        file_id=str(uuid.uuid4()),
+                        file_id=file_id,  # Use the same file_id as frame storage
                         file_path=file_path,
                         file_name=file_name,
                         file_size=file_stat.st_size,
@@ -749,10 +779,20 @@ class IndexingService:
                 else:
                     logger.warning(f"No AI description generated for {file_name}")
 
+                # Clear frame progress when file is complete
                 if self.current_job:
+                    self.current_job["progress"].current_file_frames_total = None
+                    self.current_job["progress"].current_file_frames_processed = None
+                    self.current_job["progress"].current_frame_activity = None
                     self.current_job["progress"].successful_files += 1
+                    self.current_job["progress"].processed_files += 1
 
             except Exception as e:
                 logger.error(f"Failed to process {file_path}: {e}")
+                # Clear frame progress on error
                 if self.current_job:
+                    self.current_job["progress"].current_file_frames_total = None
+                    self.current_job["progress"].current_file_frames_processed = None
+                    self.current_job["progress"].current_frame_activity = None
                     self.current_job["progress"].failed_files += 1
+                    self.current_job["progress"].processed_files += 1
