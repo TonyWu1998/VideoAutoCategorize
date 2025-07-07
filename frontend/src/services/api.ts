@@ -17,6 +17,17 @@ import {
   IndexingStats,
   FileWatcherStatus
 } from '../types/indexing';
+import {
+  PromptTemplate,
+  PromptTemplateRequest,
+  PromptConfiguration,
+  PromptConfigurationRequest,
+  PromptValidationRequest,
+  PromptValidationResponse,
+  PromptTestRequest,
+  PromptTestResponse,
+  MediaType as PromptMediaType
+} from '../types/prompts';
 
 // API configuration
 const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:8000';
@@ -478,6 +489,81 @@ export const configAPI = {
 // Export the configured axios instance for custom requests
 export { apiClient };
 
+// Prompt Management API
+export const promptAPI = {
+  /**
+   * List all prompt templates
+   */
+  listTemplates: async (mediaType?: PromptMediaType): Promise<PromptTemplate[]> => {
+    const params = mediaType ? { media_type: mediaType } : {};
+    const response = await apiClient.get('/api/config/prompts/', { params });
+    return response.data.templates;
+  },
+
+  /**
+   * Get a specific prompt template
+   */
+  getTemplate: async (templateId: string): Promise<PromptTemplate> => {
+    const response = await apiClient.get(`/api/config/prompts/${templateId}`);
+    return response.data;
+  },
+
+  /**
+   * Create a new prompt template
+   */
+  createTemplate: async (request: PromptTemplateRequest): Promise<PromptTemplate> => {
+    const response = await apiClient.post('/api/config/prompts/', request);
+    return response.data;
+  },
+
+  /**
+   * Update an existing prompt template
+   */
+  updateTemplate: async (templateId: string, request: PromptTemplateRequest): Promise<PromptTemplate> => {
+    const response = await apiClient.put(`/api/config/prompts/${templateId}`, request);
+    return response.data;
+  },
+
+  /**
+   * Delete a prompt template
+   */
+  deleteTemplate: async (templateId: string): Promise<void> => {
+    await apiClient.delete(`/api/config/prompts/${templateId}`);
+  },
+
+  /**
+   * Get active prompt configuration
+   */
+  getActiveConfiguration: async (): Promise<PromptConfiguration> => {
+    const response = await apiClient.get('/api/config/prompts/config/active');
+    return response.data;
+  },
+
+  /**
+   * Update active prompt configuration
+   */
+  updateActiveConfiguration: async (request: PromptConfigurationRequest): Promise<PromptConfiguration> => {
+    const response = await apiClient.put('/api/config/prompts/config/active', request);
+    return response.data;
+  },
+
+  /**
+   * Validate a prompt template
+   */
+  validatePrompt: async (request: PromptValidationRequest): Promise<PromptValidationResponse> => {
+    const response = await apiClient.post('/api/config/prompts/validate', request);
+    return response.data;
+  },
+
+  /**
+   * Test a prompt template
+   */
+  testPrompt: async (request: PromptTestRequest): Promise<PromptTestResponse> => {
+    const response = await apiClient.post('/api/config/prompts/test', request);
+    return response.data;
+  },
+};
+
 // Export default API object
 export default {
   search: searchAPI,
@@ -485,4 +571,5 @@ export default {
   indexing: indexingAPI,
   health: healthAPI,
   config: configAPI,
+  prompts: promptAPI,
 };

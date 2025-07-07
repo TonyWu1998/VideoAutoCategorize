@@ -12,7 +12,7 @@ from pathlib import Path
 
 # Import application modules
 from app.config import settings
-from app.api import search, indexing, media, health, config_api
+from app.api import search, indexing, media, health, config_api, prompts_api
 from app.database.vector_db import VectorDatabase
 
 # Configure logging
@@ -66,7 +66,12 @@ async def startup_event():
         Path(settings.CHROMA_DB_PATH).mkdir(parents=True, exist_ok=True)
         if settings.LOG_FILE_PATH:
             Path(settings.LOG_FILE_PATH).parent.mkdir(parents=True, exist_ok=True)
-        
+
+        # Setup default prompt templates if needed
+        from app.services.prompt_migration import PromptMigrationService
+        migration_service = PromptMigrationService()
+        await migration_service.setup_default_prompts()
+
         logger.info("Application startup completed successfully")
         
     except Exception as e:
@@ -98,6 +103,7 @@ app.include_router(search.router, prefix="/api/search", tags=["search"])
 app.include_router(indexing.router, prefix="/api/index", tags=["indexing"])
 app.include_router(media.router, prefix="/api/media", tags=["media"])
 app.include_router(config_api.router, prefix="/api/config", tags=["config"])
+app.include_router(prompts_api.router, prefix="/api/config/prompts", tags=["prompts"])
 
 # Serve static files (media files)
 try:

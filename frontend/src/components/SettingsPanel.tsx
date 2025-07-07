@@ -40,6 +40,8 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { indexingAPI, healthAPI, configAPI } from '../services/api';
 import { defaultIndexingRequest } from '../types/indexing';
+import PromptLibrary from './PromptLibrary';
+import PromptConfiguration from './PromptConfiguration';
 
 interface TabPanelProps {
   children?: React.ReactNode;
@@ -307,6 +309,7 @@ const SettingsPanel: React.FC = () => {
             <Tab label="Indexing" />
             <Tab label="Library" />
             <Tab label="AI Settings" />
+            <Tab label="Prompts" />
             <Tab label="System Status" />
             <Tab label="About" />
           </Tabs>
@@ -756,6 +759,11 @@ const SettingsPanel: React.FC = () => {
                   </Grid>
                 </Box>
 
+                <Divider sx={{ my: 4 }} />
+
+                {/* Prompt Configuration */}
+                <PromptConfiguration />
+
                 {/* Action Buttons */}
                 <Stack direction="row" spacing={2} sx={{ pt: 2 }}>
                   <Button
@@ -778,8 +786,13 @@ const SettingsPanel: React.FC = () => {
             )}
           </TabPanel>
 
-          {/* System Status Tab */}
+          {/* Prompts Tab */}
           <TabPanel value={tabValue} index={3}>
+            <PromptLibrary />
+          </TabPanel>
+
+          {/* System Status Tab */}
+          <TabPanel value={tabValue} index={4}>
             <Typography variant="h6" gutterBottom>
               System Status
             </Typography>
@@ -856,7 +869,7 @@ const SettingsPanel: React.FC = () => {
           </TabPanel>
 
           {/* About Tab */}
-          <TabPanel value={tabValue} index={4}>
+          <TabPanel value={tabValue} index={5}>
             <Typography variant="h6" gutterBottom>
               About Media Semantic Search
             </Typography>

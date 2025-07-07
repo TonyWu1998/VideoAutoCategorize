@@ -3,9 +3,10 @@ Database schemas and data models for ChromaDB and metadata storage.
 """
 
 from typing import Dict, List, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass
 import json
+import uuid
 
 
 @dataclass
@@ -245,9 +246,114 @@ class IndexingJob:
         return (self.completed_at - self.started_at).total_seconds()
 
 
+@dataclass
+class PromptTemplate:
+    """
+    Represents a customizable LLM prompt template for media analysis.
+
+    This stores user-defined or system default prompts that can be used
+    for analyzing images and video frames with configurable instructions.
+    """
+
+    # Unique identifier
+    template_id: str
+
+    # Template metadata
+    name: str
+    description: str
+    media_type: str  # "image" or "video_frame"
+
+    # Prompt content
+    prompt_text: str
+
+    # Template properties
+    is_default: bool = False
+    is_active: bool = False
+    version: str = "1.0"
+    author: str = "user"  # "system" for defaults, "user" for custom
+
+    # Timestamps
+    created_date: datetime = None
+    modified_date: datetime = None
+
+    def __post_init__(self):
+        """Initialize default values after dataclass creation."""
+        if self.created_date is None:
+            self.created_date = datetime.now(timezone.utc)
+        if self.modified_date is None:
+            self.modified_date = self.created_date
+        if not self.template_id:
+            self.template_id = str(uuid.uuid4())
+
+    def to_chroma_metadata(self) -> Dict[str, Any]:
+        """
+        Convert to ChromaDB metadata format.
+
+        ChromaDB requires all metadata values to be strings, numbers, or booleans.
+        """
+        return {
+            "template_id": self.template_id,
+            "name": self.name,
+            "description": self.description,
+            "media_type": self.media_type,
+            "prompt_text": self.prompt_text,
+            "is_default": self.is_default,
+            "is_active": self.is_active,
+            "version": self.version,
+            "author": self.author,
+            "created_date": self.created_date.isoformat(),
+            "modified_date": self.modified_date.isoformat(),
+        }
+
+    @classmethod
+    def from_chroma_metadata(cls, template_id: str, metadata: Dict[str, Any]) -> "PromptTemplate":
+        """
+        Create PromptTemplate from ChromaDB metadata.
+
+        Converts the stored metadata back to proper Python types.
+        """
+        return cls(
+            template_id=template_id,
+            name=metadata["name"],
+            description=metadata["description"],
+            media_type=metadata["media_type"],
+            prompt_text=metadata["prompt_text"],
+            is_default=metadata.get("is_default", False),
+            is_active=metadata.get("is_active", False),
+            version=metadata.get("version", "1.0"),
+            author=metadata.get("author", "user"),
+            created_date=datetime.fromisoformat(metadata["created_date"]),
+            modified_date=datetime.fromisoformat(metadata["modified_date"]),
+        )
+
+
+@dataclass
+class PromptConfiguration:
+    """
+    Represents the active prompt configuration for the system.
+
+    This tracks which prompt templates are currently active for
+    different media types.
+    """
+
+    # Active prompt template IDs
+    active_image_prompt_id: Optional[str] = None
+    active_video_prompt_id: Optional[str] = None
+
+    # Configuration metadata
+    last_updated: datetime = None
+    updated_by: str = "system"
+
+    def __post_init__(self):
+        """Initialize default values after dataclass creation."""
+        if self.last_updated is None:
+            self.last_updated = datetime.now(timezone.utc)
+
+
 # Collection names for ChromaDB
 MEDIA_COLLECTION_NAME = "media_embeddings"
 JOBS_COLLECTION_NAME = "indexing_jobs"
+PROMPT_TEMPLATES_COLLECTION_NAME = "prompt_templates"
 
 # Metadata field names
 METADATA_FIELDS = [
@@ -273,4 +379,28 @@ SEARCHABLE_FIELDS = [
     "format",
     "ai_tags",
     "file_name"
+]
+
+# Prompt template metadata field names
+PROMPT_TEMPLATE_FIELDS = [
+    "template_id",
+    "name",
+    "description",
+    "media_type",
+    "prompt_text",
+    "is_default",
+    "is_active",
+    "version",
+    "author",
+    "created_date",
+    "modified_date"
+]
+
+# Searchable fields for prompt templates
+PROMPT_SEARCHABLE_FIELDS = [
+    "media_type",
+    "is_default",
+    "is_active",
+    "author",
+    "name"
 ]

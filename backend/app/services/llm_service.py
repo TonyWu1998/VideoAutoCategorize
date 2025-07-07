@@ -16,6 +16,7 @@ import asyncio
 import time
 
 from app.config import settings
+from app.models.prompts import MediaType
 
 logger = logging.getLogger(__name__)
 
@@ -34,15 +35,26 @@ class LLMService:
             self.client = ollama.Client(host=settings.OLLAMA_BASE_URL)
             self.model = settings.OLLAMA_MODEL
             self.timeout = settings.OLLAMA_TIMEOUT
-            
+
+            # Initialize prompt manager (lazy loading to avoid circular imports)
+            self._prompt_manager = None
+
             # Test connection
             self._test_connection()
-            
+
             logger.info(f"LLM service initialized with model: {self.model}")
-            
+
         except Exception as e:
             logger.error(f"Failed to initialize LLM service: {e}")
             raise
+
+    @property
+    def prompt_manager(self):
+        """Lazy load prompt manager to avoid circular imports."""
+        if self._prompt_manager is None:
+            from app.services.prompt_manager import PromptManager
+            self._prompt_manager = PromptManager()
+        return self._prompt_manager
     
     async def analyze_image(self, image_path: str) -> Dict[str, Any]:
         """
@@ -336,34 +348,9 @@ class LLMService:
         try:
             logger.info(f"🤖 Starting LLM analysis for media_type: {media_type}")
 
-            # Create analysis prompt
-            if media_type == "video_frame":
-                prompt = """Analyze this video frame and provide a JSON response with the following structure:
-
-{
-  "description": "A detailed 2-3 sentence description of what you see in the frame",
-  "objects": ["list", "of", "key", "objects"],
-  "setting": "location or environment description",
-  "mood": "atmosphere or emotional tone",
-  "tags": ["relevant", "descriptive", "keywords"]
-}
-
-IMPORTANT: Respond ONLY with valid JSON. Do not include markdown code blocks, explanations, or any text outside the JSON object."""
-                logger.info(f"🤖 Using improved video frame analysis prompt")
-            else:
-                prompt = """Analyze this image and provide a JSON response with the following structure:
-
-{
-  "description": "A detailed 2-3 sentence description of what you see in the image",
-  "objects": ["list", "of", "key", "objects", "people", "subjects"],
-  "setting": "location or environment description",
-  "mood": "atmosphere or emotional tone",
-  "colors": "dominant colors and visual style",
-  "tags": ["relevant", "descriptive", "keywords"]
-}
-
-IMPORTANT: Respond ONLY with valid JSON. Do not include markdown code blocks, explanations, or any text outside the JSON object."""
-                logger.info(f"🤖 Using improved image analysis prompt")
+            # Get analysis prompt from prompt manager or use default
+            prompt = await self._get_analysis_prompt(media_type)
+            logger.info(f"🤖 Using prompt for {media_type} analysis")
 
             # Call Ollama API with conservative options for stability
             logger.info(f"🤖 Calling Ollama API with model: {self.model}")
@@ -402,6 +389,77 @@ IMPORTANT: Respond ONLY with valid JSON. Do not include markdown code blocks, ex
         except Exception as e:
             logger.error(f"🤖 LLM analysis failed for media_type {media_type}: {e}")
             return self._create_fallback_result(f"LLM analysis exception: {str(e)}")
+
+    async def _get_analysis_prompt(self, media_type: str) -> str:
+        """
+        Get the appropriate analysis prompt for the given media type.
+
+        First tries to get a custom prompt from the prompt manager,
+        falls back to default hardcoded prompts if none configured.
+
+        Args:
+            media_type: Type of media being analyzed
+
+        Returns:
+            Prompt text to use for analysis
+        """
+        try:
+            # Map media_type to MediaType enum
+            if media_type == "video_frame":
+                prompt_media_type = MediaType.VIDEO_FRAME
+            else:
+                prompt_media_type = MediaType.IMAGE
+
+            # Try to get custom prompt
+            custom_prompt = await self.prompt_manager.get_active_prompt_text(prompt_media_type)
+
+            if custom_prompt:
+                logger.info(f"🤖 Using custom prompt for {media_type}")
+                return custom_prompt
+
+            # Fall back to default prompts
+            logger.info(f"🤖 Using default prompt for {media_type}")
+            return self._get_default_prompt(media_type)
+
+        except Exception as e:
+            logger.warning(f"Failed to get custom prompt for {media_type}, using default: {e}")
+            return self._get_default_prompt(media_type)
+
+    def _get_default_prompt(self, media_type: str) -> str:
+        """
+        Get the default hardcoded prompt for the given media type.
+
+        Args:
+            media_type: Type of media being analyzed
+
+        Returns:
+            Default prompt text
+        """
+        if media_type == "video_frame":
+            return """Analyze this video frame and provide a JSON response with the following structure:
+
+{
+  "description": "A detailed 2-3 sentence description of what you see in the frame",
+  "objects": ["list", "of", "key", "objects"],
+  "setting": "location or environment description",
+  "mood": "atmosphere or emotional tone",
+  "tags": ["relevant", "descriptive", "keywords"]
+}
+
+IMPORTANT: Respond ONLY with valid JSON. Do not include markdown code blocks, explanations, or any text outside the JSON object."""
+        else:
+            return """Analyze this image and provide a JSON response with the following structure:
+
+{
+  "description": "A detailed 2-3 sentence description of what you see in the image",
+  "objects": ["list", "of", "key", "objects", "people", "subjects"],
+  "setting": "location or environment description",
+  "mood": "atmosphere or emotional tone",
+  "colors": "dominant colors and visual style",
+  "tags": ["relevant", "descriptive", "keywords"]
+}
+
+IMPORTANT: Respond ONLY with valid JSON. Do not include markdown code blocks, explanations, or any text outside the JSON object."""
     
     async def _generate_embedding(self, text: str) -> List[float]:
         """
