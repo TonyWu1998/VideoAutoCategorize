@@ -12,7 +12,7 @@ from ..services.llm_service import LLMService
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/settings", tags=["settings"])
+router = APIRouter(prefix="", tags=["config"])
 
 
 class LLMConfigRequest(BaseModel):

@@ -26,6 +26,8 @@ import {
   DialogActions,
   Button,
   CircularProgress,
+  Snackbar,
+  Alert,
 } from '@mui/material';
 import {
   PlayArrow as PlayIcon,
@@ -35,6 +37,7 @@ import {
   Info as InfoIcon,
   FindInPage as SimilarIcon,
   Delete as DeleteIcon,
+  Refresh as RefreshIcon,
 } from '@mui/icons-material';
 import { MediaItem, MediaType, formatFileSize, formatDuration } from '../types/media';
 import { useSearchStore } from '../store/searchStore';
@@ -51,6 +54,7 @@ const MediaGallery: React.FC<MediaGalleryProps> = ({ results, loading }) => {
   const {
     selectedItems,
     viewMode,
+    query,
     selectItem,
     deselectItem,
     findSimilar,
@@ -61,6 +65,12 @@ const MediaGallery: React.FC<MediaGalleryProps> = ({ results, loading }) => {
   const [menuFileId, setMenuFileId] = useState<string | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [itemToDelete, setItemToDelete] = useState<MediaItem | null>(null);
+  const [reindexingItems, setReindexingItems] = useState<Set<string>>(new Set());
+  const [snackbar, setSnackbar] = useState<{open: boolean, message: string, severity: 'success' | 'error'}>({
+    open: false,
+    message: '',
+    severity: 'success'
+  });
 
   const queryClient = useQueryClient();
 
@@ -79,6 +89,51 @@ const MediaGallery: React.FC<MediaGalleryProps> = ({ results, loading }) => {
     onError: (error) => {
       console.error('Failed to delete file:', error);
       // You could add a toast notification here
+    },
+  });
+
+  // Reindex mutation
+  const reindexMutation = useMutation({
+    mutationFn: async (fileIds: string[]) => {
+      return await indexingAPI.reindexFiles(fileIds);
+    },
+    onSuccess: (_, fileIds) => {
+      // Show success message
+      setSnackbar({
+        open: true,
+        message: `Successfully started reindexing ${fileIds.length} file${fileIds.length > 1 ? 's' : ''}`,
+        severity: 'success'
+      });
+
+      // Remove from reindexing set after a delay to show completion
+      setTimeout(() => {
+        setReindexingItems(prev => {
+          const newSet = new Set(prev);
+          fileIds.forEach(id => newSet.delete(id));
+          return newSet;
+        });
+      }, 2000);
+
+      // Refresh the media list after reindexing
+      queryClient.invalidateQueries({ queryKey: ['search'] });
+      queryClient.invalidateQueries({ queryKey: ['media'] });
+    },
+    onError: (error, fileIds) => {
+      console.error('Failed to reindex files:', error);
+
+      // Show error message
+      setSnackbar({
+        open: true,
+        message: `Failed to reindex files: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        severity: 'error'
+      });
+
+      // Remove from reindexing set on error
+      setReindexingItems(prev => {
+        const newSet = new Set(prev);
+        fileIds.forEach(id => newSet.delete(id));
+        return newSet;
+      });
     },
   });
 
@@ -133,6 +188,21 @@ const MediaGallery: React.FC<MediaGalleryProps> = ({ results, loading }) => {
     setItemToDelete(null);
   };
 
+  const handleReindex = (fileId: string) => {
+    setReindexingItems(prev => new Set([...prev, fileId]));
+    reindexMutation.mutate([fileId]);
+    setAnchorEl(null);
+    setMenuFileId(null);
+  };
+
+  const handleBatchReindex = () => {
+    const fileIds = Array.from(selectedItems);
+    if (fileIds.length > 0) {
+      setReindexingItems(prev => new Set([...prev, ...fileIds]));
+      reindexMutation.mutate(fileIds);
+    }
+  };
+
   const renderLoadingSkeleton = () => (
     <Grid container spacing={2}>
       {Array.from({ length: 8 }).map((_, index) => (
@@ -152,6 +222,7 @@ const MediaGallery: React.FC<MediaGalleryProps> = ({ results, loading }) => {
   const renderMediaCard = (item: MediaItem) => {
     const isSelected = selectedItems.has(item.file_id);
     const isVideo = item.metadata.media_type === MediaType.VIDEO;
+    const isReindexing = reindexingItems.has(item.file_id);
     const thumbnailUrl = mediaAPI.getThumbnailUrl(item.file_id, 300);
 
     return (
@@ -201,6 +272,30 @@ const MediaGallery: React.FC<MediaGalleryProps> = ({ results, loading }) => {
               }}
             >
               <PlayIcon sx={{ color: 'white', fontSize: 32 }} />
+            </Box>
+          )}
+
+          {/* Reindexing Overlay */}
+          {isReindexing && (
+            <Box
+              sx={{
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                right: 0,
+                bottom: 0,
+                backgroundColor: 'rgba(0, 0, 0, 0.7)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexDirection: 'column',
+                gap: 1,
+              }}
+            >
+              <CircularProgress size={32} sx={{ color: 'white' }} />
+              <Typography variant="caption" sx={{ color: 'white', fontWeight: 'bold' }}>
+                Reindexing...
+              </Typography>
             </Box>
           )}
 
@@ -335,6 +430,14 @@ const MediaGallery: React.FC<MediaGalleryProps> = ({ results, loading }) => {
               )}
             </Stack>
           )}
+
+          {/* Indexing Status */}
+          {item.metadata.indexed_date && (
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+              Indexed: {new Date(item.metadata.indexed_date).toLocaleDateString()}
+              {item.metadata.index_version && ` (v${item.metadata.index_version})`}
+            </Typography>
+          )}
         </CardContent>
       </Card>
     );
@@ -345,6 +448,8 @@ const MediaGallery: React.FC<MediaGalleryProps> = ({ results, loading }) => {
   }
 
   if (results.length === 0) {
+    const isSearching = query.trim().length > 0;
+
     return (
       <Paper
         sx={{
@@ -355,10 +460,13 @@ const MediaGallery: React.FC<MediaGalleryProps> = ({ results, loading }) => {
       >
         <ImageIcon sx={{ fontSize: 64, color: 'grey.400', mb: 2 }} />
         <Typography variant="h6" color="text.secondary" gutterBottom>
-          No media files found
+          {isSearching ? 'No matching media files found' : 'No media files in library'}
         </Typography>
         <Typography variant="body2" color="text.secondary">
-          Try adjusting your search query or filters
+          {isSearching
+            ? 'Try adjusting your search query or filters'
+            : 'Add some media files to your library to get started'
+          }
         </Typography>
       </Paper>
     );
@@ -366,6 +474,34 @@ const MediaGallery: React.FC<MediaGalleryProps> = ({ results, loading }) => {
 
   return (
     <Box>
+      {/* Batch Operations Toolbar */}
+      {selectedItems.size > 0 && (
+        <Paper
+          elevation={2}
+          sx={{
+            p: 2,
+            mb: 2,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 2,
+            backgroundColor: 'primary.50'
+          }}
+        >
+          <Typography variant="body2" sx={{ flexGrow: 1 }}>
+            {selectedItems.size} item{selectedItems.size > 1 ? 's' : ''} selected
+          </Typography>
+          <Button
+            variant="outlined"
+            size="small"
+            startIcon={<RefreshIcon />}
+            onClick={handleBatchReindex}
+            disabled={reindexMutation.isPending}
+          >
+            Reindex Selected
+          </Button>
+        </Paper>
+      )}
+
       {/* Results Grid */}
       <Grid container spacing={2}>
         {results.map((item) => (
@@ -409,6 +545,20 @@ const MediaGallery: React.FC<MediaGalleryProps> = ({ results, loading }) => {
             <SimilarIcon fontSize="small" />
           </ListItemIcon>
           <ListItemText>Find Similar</ListItemText>
+        </MenuItem>
+
+        <MenuItem
+          onClick={() => {
+            if (menuFileId) handleReindex(menuFileId);
+          }}
+          disabled={menuFileId ? reindexingItems.has(menuFileId) : false}
+        >
+          <ListItemIcon>
+            <RefreshIcon fontSize="small" />
+          </ListItemIcon>
+          <ListItemText>
+            {menuFileId && reindexingItems.has(menuFileId) ? 'Reindexing...' : 'Reindex'}
+          </ListItemText>
         </MenuItem>
 
         <MenuItem
@@ -464,6 +614,22 @@ const MediaGallery: React.FC<MediaGalleryProps> = ({ results, loading }) => {
           </Button>
         </DialogActions>
       </Dialog>
+
+      {/* Snackbar for feedback */}
+      <Snackbar
+        open={snackbar.open}
+        autoHideDuration={6000}
+        onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+      >
+        <Alert
+          onClose={() => setSnackbar(prev => ({ ...prev, open: false }))}
+          severity={snackbar.severity}
+          sx={{ width: '100%' }}
+        >
+          {snackbar.message}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 };

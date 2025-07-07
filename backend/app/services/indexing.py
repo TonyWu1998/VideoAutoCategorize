@@ -100,14 +100,25 @@ class IndexingService:
             
             job = self.current_job
             
+            # Handle both regular indexing and reindexing jobs
+            if job["request"]:
+                current_paths = job["request"].paths
+                batch_size = job["request"].batch_size or settings.BATCH_SIZE
+                max_concurrent = job["request"].max_concurrent or settings.MAX_CONCURRENT_PROCESSING
+            else:
+                # Reindexing job
+                current_paths = []
+                batch_size = settings.BATCH_SIZE
+                max_concurrent = settings.MAX_CONCURRENT_PROCESSING
+
             return IndexingStatusResponse(
                 status=IndexingStatus(job["status"]),
                 job_id=job["job_id"],
                 started_at=job["started_at"],
                 progress=job["progress"],
-                current_paths=job["request"].paths,
-                batch_size=job["request"].batch_size or settings.BATCH_SIZE,
-                max_concurrent=job["request"].max_concurrent or settings.MAX_CONCURRENT_PROCESSING,
+                current_paths=current_paths,
+                batch_size=batch_size,
+                max_concurrent=max_concurrent,
                 success=True,
                 message="Indexing status retrieved successfully"
             )
@@ -208,25 +219,38 @@ class IndexingService:
     async def reindex_files(self, file_ids: List[str]) -> str:
         """
         Reindex specific files by their IDs.
-        
+
         Args:
             file_ids: List of file IDs to reindex
-            
+
         Returns:
             Job ID for tracking progress
         """
         try:
-            # For now, just return a placeholder job ID
             job_id = str(uuid.uuid4())
             logger.info(f"Reindexing {len(file_ids)} files with job ID: {job_id}")
-            
-            # In a full implementation, this would:
-            # 1. Get file paths from database
-            # 2. Re-analyze files with LLM
-            # 3. Update embeddings and metadata
-            
+
+            # Create reindexing job tracking object
+            self.current_job = {
+                "job_id": job_id,
+                "status": IndexingStatus.PROCESSING,
+                "started_at": datetime.now(timezone.utc),
+                "request": None,  # No request for reindexing
+                "progress": IndexingProgress(
+                    total_files=len(file_ids),
+                    processed_files=0,
+                    successful_files=0,
+                    failed_files=0,
+                    skipped_files=0
+                ),
+                "reindex_file_ids": file_ids
+            }
+
+            # Start reindexing in background
+            asyncio.create_task(self._process_reindexing_job(file_ids))
+
             return job_id
-            
+
         except Exception as e:
             logger.error(f"Failed to start reindexing: {e}")
             raise
@@ -325,13 +349,147 @@ class IndexingService:
     async def monitor_indexing_job(self, job_id: str) -> None:
         """
         Monitor an indexing job (background task).
-        
+
         Args:
             job_id: Job ID to monitor
         """
         logger.info(f"Monitoring indexing job: {job_id}")
         # Placeholder for job monitoring logic
         pass
+
+    async def _process_reindexing_job(self, file_ids: List[str]) -> None:
+        """
+        Process a reindexing job in the background.
+
+        Args:
+            file_ids: List of file IDs to reindex
+        """
+        try:
+            if not self.current_job:
+                return
+
+            job = self.current_job
+            logger.info(f"Starting reindexing job {job['job_id']} for {len(file_ids)} files")
+
+            # Process each file
+            for file_id in file_ids:
+                if job["status"] == IndexingStatus.CANCELLED:
+                    break
+
+                try:
+                    # Get existing media document
+                    media_doc = self.vector_db.get_media(file_id)
+                    if not media_doc:
+                        logger.warning(f"File not found in database: {file_id}")
+                        job["progress"].failed_files += 1
+                        continue
+
+                    # Check if file still exists
+                    if not Path(media_doc.file_path).exists():
+                        logger.warning(f"File no longer exists: {media_doc.file_path}")
+                        job["progress"].failed_files += 1
+                        continue
+
+                    # Re-analyze the file
+                    await self._reindex_single_file(media_doc)
+                    job["progress"].successful_files += 1
+                    logger.info(f"✅ Successfully reindexed {media_doc.file_name}")
+
+                except Exception as e:
+                    logger.error(f"Failed to reindex file {file_id}: {e}")
+                    job["progress"].failed_files += 1
+
+                job["progress"].processed_files += 1
+
+            # Complete job
+            job["status"] = IndexingStatus.COMPLETED
+            job["completed_at"] = datetime.now(timezone.utc)
+
+            logger.info(f"Reindexing job completed: {job['job_id']} - "
+                       f"Success: {job['progress'].successful_files}, "
+                       f"Failed: {job['progress'].failed_files}")
+
+        except Exception as e:
+            logger.error(f"Reindexing job failed: {e}")
+            if self.current_job:
+                self.current_job["status"] = IndexingStatus.FAILED
+
+    async def _reindex_single_file(self, media_doc) -> None:
+        """
+        Reindex a single file with fresh AI analysis.
+
+        Args:
+            media_doc: Existing MediaDocument to reindex
+        """
+        try:
+            from app.models.media import MediaType
+
+            # Update current file in progress
+            if self.current_job:
+                self.current_job["progress"].current_file = media_doc.file_path
+                self.current_job["progress"].current_file_frames_total = None
+                self.current_job["progress"].current_file_frames_processed = None
+                self.current_job["progress"].current_frame_activity = None
+
+            # Determine media type
+            file_ext = Path(media_doc.file_path).suffix.lower()
+            if file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']:
+                media_type = MediaType.IMAGE
+            elif file_ext in ['.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm']:
+                media_type = MediaType.VIDEO
+            else:
+                logger.warning(f"Unsupported file type for reindexing: {file_ext}")
+                return
+
+            # Create progress callback for frame-level tracking
+            def frame_progress_callback(current_frame: int, total_frames: int, activity: str):
+                if self.current_job:
+                    self.current_job["progress"].current_file_frames_total = total_frames
+                    self.current_job["progress"].current_file_frames_processed = current_frame
+                    self.current_job["progress"].current_frame_activity = activity
+                    logger.debug(f"Frame progress: {current_frame}/{total_frames} - {activity}")
+
+            # Re-analyze with LLM
+            if media_type == MediaType.IMAGE:
+                analysis_result = await self.llm_service.analyze_image(media_doc.file_path)
+            else:
+                analysis_result = await self.llm_service.analyze_video(
+                    media_doc.file_path,
+                    progress_callback=frame_progress_callback
+                )
+
+            if not analysis_result or not analysis_result.get('description'):
+                logger.warning(f"No analysis result for {media_doc.file_path}")
+                return
+
+            # Update the document with new analysis
+            media_doc.ai_description = analysis_result['description']
+            media_doc.ai_tags = analysis_result.get('tags', [])
+            media_doc.ai_confidence = analysis_result.get('confidence')
+            media_doc.indexed_date = datetime.now(timezone.utc)
+            media_doc.index_version = "2.0"  # Increment version to indicate reindexing
+
+            # Generate new embedding
+            if analysis_result.get('embedding'):
+                media_doc.embedding = analysis_result['embedding']
+            else:
+                # Generate embedding from description if not provided
+                media_doc.embedding = await self.llm_service._generate_embedding(media_doc.ai_description)
+
+            # Update in vector database
+            self.vector_db.update_media(media_doc)
+
+            # Clear frame progress when file is complete
+            if self.current_job:
+                self.current_job["progress"].current_file_frames_total = None
+                self.current_job["progress"].current_file_frames_processed = None
+                self.current_job["progress"].current_frame_activity = None
+
+            logger.info(f"Successfully reindexed {media_doc.file_name}")
+
+        except Exception as e:
+            logger.error(f"Failed to reindex file {media_doc.file_path}: {e}")
+            raise
     
     async def _process_indexing_job(self, request: IndexingRequest) -> None:
         """

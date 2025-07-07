@@ -56,8 +56,8 @@ const SearchBar: React.FC = () => {
   }, [query]);
 
   const handleSearch = async () => {
+    // Just update the query - the store will handle filtering/searching
     setQuery(localQuery);
-    await performSearch(localQuery);
     hideSuggestions();
   };
 
@@ -70,7 +70,6 @@ const SearchBar: React.FC = () => {
   const handleSuggestionClick = (suggestion: string) => {
     setLocalQuery(suggestion);
     setQuery(suggestion);
-    performSearch(suggestion);
     hideSuggestions();
   };
 

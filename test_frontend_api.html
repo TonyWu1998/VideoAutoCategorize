@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Frontend API Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .test-section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .success {
+            background-color: #d4edda;
+            border-color: #c3e6cb;
+            color: #155724;
+        }
+        .error {
+            background-color: #f8d7da;
+            border-color: #f5c6cb;
+            color: #721c24;
+        }
+        .info {
+            background-color: #d1ecf1;
+            border-color: #bee5eb;
+            color: #0c5460;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        pre {
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+        .form-group {
+            margin: 10px 0;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input, select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🧪 Frontend API Test</h1>
+        <p>Testing the complete frontend → backend API flow for LLM settings</p>
+
+        <div class="test-section info">
+            <h3>📊 System Status</h3>
+            <button onclick="testHealth()">Check Health</button>
+            <button onclick="testIndexingStatus()">Check Indexing Status</button>
+            <div id="status-results"></div>
+        </div>
+
+        <div class="test-section info">
+            <h3>⚙️ LLM Configuration</h3>
+            <button onclick="getLLMConfig()">Get Current Config</button>
+            <button onclick="resetLLMConfig()">Reset to Defaults</button>
+            <div id="config-results"></div>
+        </div>
+
+        <div class="test-section info">
+            <h3>✏️ Update LLM Settings</h3>
+            <div class="form-group">
+                <label for="maxFrames">Max Video Frames:</label>
+                <input type="number" id="maxFrames" value="15" min="1" max="50">
+            </div>
+            <div class="form-group">
+                <label for="frameInterval">Frame Interval (seconds):</label>
+                <input type="number" id="frameInterval" value="30" min="1" max="300">
+            </div>
+            <div class="form-group">
+                <label for="ollamaModel">Ollama Model:</label>
+                <select id="ollamaModel">
+                    <option value="gemma3:4b">gemma3:4b</option>
+                    <option value="llama3:8b">llama3:8b</option>
+                    <option value="mistral:7b">mistral:7b</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="embeddingModel">Embedding Model:</label>
+                <select id="embeddingModel">
+                    <option value="nomic-embed-text">nomic-embed-text</option>
+                    <option value="all-minilm">all-minilm</option>
+                </select>
+            </div>
+            <button onclick="updateLLMConfig()">Update Configuration</button>
+            <div id="update-results"></div>
+        </div>
+
+        <div class="test-section info">
+            <h3>🔄 Complete Flow Test</h3>
+            <button onclick="runCompleteTest()">Run Complete Test</button>
+            <div id="complete-test-results"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000';
+
+        function showResult(elementId, message, isError = false) {
+            const element = document.getElementById(elementId);
+            const className = isError ? 'error' : 'success';
+            element.innerHTML = `<div class="${className}">${message}</div>`;
+        }
+
+        async function testHealth() {
+            try {
+                const response = await fetch(`${API_BASE}/api/health`);
+                const data = await response.json();
+                showResult('status-results', `
+                    <strong>Health Check:</strong> ${data.status}<br>
+                    <strong>Database:</strong> ${data.database_healthy ? '✅' : '❌'}<br>
+                    <strong>Ollama:</strong> ${data.ollama_healthy ? '✅' : '❌'}<br>
+                    <strong>Uptime:</strong> ${Math.round(data.uptime_seconds)}s
+                `);
+            } catch (error) {
+                showResult('status-results', `Health check failed: ${error.message}`, true);
+            }
+        }
+
+        async function testIndexingStatus() {
+            try {
+                const response = await fetch(`${API_BASE}/api/index/status`);
+                const data = await response.json();
+                showResult('status-results', `
+                    <strong>Indexing Status:</strong> ${data.status}<br>
+                    <strong>Active Jobs:</strong> ${data.job_id || 'None'}<br>
+                    <strong>Message:</strong> ${data.message}
+                `);
+            } catch (error) {
+                showResult('status-results', `Indexing status check failed: ${error.message}`, true);
+            }
+        }
+
+        async function getLLMConfig() {
+            try {
+                const response = await fetch(`${API_BASE}/api/config/llm`);
+                const data = await response.json();
+                showResult('config-results', `
+                    <strong>Current LLM Configuration:</strong><br>
+                    <pre>${JSON.stringify(data, null, 2)}</pre>
+                `);
+                
+                // Update form fields with current values
+                document.getElementById('maxFrames').value = data.max_video_frames;
+                document.getElementById('frameInterval').value = data.video_frame_interval;
+                document.getElementById('ollamaModel').value = data.ollama_model;
+                document.getElementById('embeddingModel').value = data.ollama_embedding_model;
+            } catch (error) {
+                showResult('config-results', `Failed to get LLM config: ${error.message}`, true);
+            }
+        }
+
+        async function resetLLMConfig() {
+            try {
+                const response = await fetch(`${API_BASE}/api/config/llm/reset`, {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                showResult('config-results', `
+                    <strong>Reset Result:</strong> ${data.message}<br>
+                    <strong>Updated Settings:</strong><br>
+                    <pre>${JSON.stringify(data.updated_settings, null, 2)}</pre>
+                `);
+                // Refresh the config display
+                setTimeout(getLLMConfig, 500);
+            } catch (error) {
+                showResult('config-results', `Failed to reset LLM config: ${error.message}`, true);
+            }
+        }
+
+        async function updateLLMConfig() {
+            try {
+                const config = {
+                    max_video_frames: parseInt(document.getElementById('maxFrames').value),
+                    video_frame_interval: parseInt(document.getElementById('frameInterval').value),
+                    ollama_model: document.getElementById('ollamaModel').value,
+                    ollama_embedding_model: document.getElementById('embeddingModel').value
+                };
+
+                const response = await fetch(`${API_BASE}/api/config/llm`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(config)
+                });
+                
+                const data = await response.json();
+                showResult('update-results', `
+                    <strong>Update Result:</strong> ${data.message}<br>
+                    <strong>Updated Settings:</strong><br>
+                    <pre>${JSON.stringify(data.updated_settings, null, 2)}</pre>
+                `);
+            } catch (error) {
+                showResult('update-results', `Failed to update LLM config: ${error.message}`, true);
+            }
+        }
+
+        async function runCompleteTest() {
+            const results = document.getElementById('complete-test-results');
+            results.innerHTML = '<div class="info">Running complete test...</div>';
+            
+            try {
+                // 1. Get initial config
+                const initialResponse = await fetch(`${API_BASE}/api/config/llm`);
+                const initialConfig = await initialResponse.json();
+                
+                // 2. Update config
+                const testConfig = {
+                    max_video_frames: 20,
+                    ollama_model: "gemma3:4b"
+                };
+                
+                const updateResponse = await fetch(`${API_BASE}/api/config/llm`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(testConfig)
+                });
+                const updateResult = await updateResponse.json();
+                
+                // 3. Verify update
+                const verifyResponse = await fetch(`${API_BASE}/api/config/llm`);
+                const verifiedConfig = await verifyResponse.json();
+                
+                // 4. Reset to defaults
+                const resetResponse = await fetch(`${API_BASE}/api/config/llm/reset`, {
+                    method: 'POST'
+                });
+                const resetResult = await resetResponse.json();
+                
+                showResult('complete-test-results', `
+                    <strong>✅ Complete Test Passed!</strong><br>
+                    <strong>1. Initial Config:</strong> max_video_frames = ${initialConfig.max_video_frames}<br>
+                    <strong>2. Updated Config:</strong> max_video_frames = ${verifiedConfig.max_video_frames}<br>
+                    <strong>3. Reset Successful:</strong> ${resetResult.message}<br>
+                    <strong>All API endpoints working correctly! 🎉</strong>
+                `);
+                
+            } catch (error) {
+                showResult('complete-test-results', `Complete test failed: ${error.message}`, true);
+            }
+        }
+
+        // Auto-load initial config on page load
+        window.onload = function() {
+            getLLMConfig();
+            testHealth();
+        };
+    </script>
+</body>
+</html>

@@ -28,7 +28,7 @@ import {
   FolderOpen as FolderOpenIcon,
 } from '@mui/icons-material';
 import { MediaItem, MediaType, formatFileSize, formatDuration } from '../types/media';
-import { mediaAPI } from '../services/api';
+import { mediaAPI, apiClient } from '../services/api';
 import { useSearchStore } from '../store/searchStore';
 
 interface MediaViewerProps {
@@ -57,11 +57,8 @@ const MediaViewer: React.FC<MediaViewerProps> = ({ media, open, onClose }) => {
   const loadVideoFrames = async () => {
     try {
       setLoadingFrames(true);
-      const response = await fetch(`/api/media/${media.file_id}/frames?frame_count=5&size=300`);
-      if (response.ok) {
-        const data = await response.json();
-        setVideoFrames(data.frame_urls || []);
-      }
+      const response = await apiClient.get(`/api/media/${media.file_id}/frames?frame_count=5&size=300`);
+      setVideoFrames(response.data.frame_urls || []);
     } catch (error) {
       console.error('Failed to load video frames:', error);
     } finally {
@@ -81,16 +78,9 @@ const MediaViewer: React.FC<MediaViewerProps> = ({ media, open, onClose }) => {
 
   const handleOpenInExplorer = async () => {
     try {
-      const response = await fetch(`/api/media/${media.file_id}/open-in-explorer`, {
-        method: 'POST',
-      });
-
-      if (response.ok) {
-        setSnackbarMessage('File opened in explorer successfully');
-        setSnackbarOpen(true);
-      } else {
-        throw new Error('Failed to open file in explorer');
-      }
+      await apiClient.post(`/api/media/${media.file_id}/open-in-explorer`);
+      setSnackbarMessage('File opened in explorer successfully');
+      setSnackbarOpen(true);
     } catch (error) {
       console.error('Failed to open file in explorer:', error);
       setSnackbarMessage('Failed to open file in explorer');

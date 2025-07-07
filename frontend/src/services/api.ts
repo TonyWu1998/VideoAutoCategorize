@@ -372,7 +372,7 @@ export const indexingAPI = {
    * Reindex specific files
    */
   reindexFiles: async (fileIds: string[]): Promise<void> => {
-    await apiClient.post('/api/index/reindex', { file_ids: fileIds });
+    await apiClient.post('/api/index/reindex', fileIds);
   },
 
   /**
@@ -462,7 +462,7 @@ export const configAPI = {
    * Update LLM configuration
    */
   updateLLMConfig: async (config: any) => {
-    const response = await apiClient.post('/api/config/llm', config);
+    const response = await apiClient.put('/api/config/llm', config);
     return response.data;
   },
 

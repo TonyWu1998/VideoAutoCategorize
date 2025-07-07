@@ -99,13 +99,15 @@ class LLMService:
             logger.error(f"🖼️ Returning error result: {error_result}")
             return error_result
     
-    async def analyze_video(self, video_path: str) -> Dict[str, Any]:
+    async def analyze_video(self, video_path: str, progress_callback=None) -> Dict[str, Any]:
         """
         Analyze a video by extracting key frames and analyzing them.
-        
+
         Args:
             video_path: Path to the video file
-            
+            progress_callback: Optional callback function for frame progress updates
+                             Signature: callback(current_frame: int, total_frames: int, activity: str)
+
         Returns:
             Dictionary containing analysis results
         """
@@ -125,12 +127,28 @@ class LLMService:
             # Analyze each frame
             logger.info(f"🎬 Starting analysis of {len(frames)} frames")
             frame_analyses = []
+
+            # Report initial progress
+            if progress_callback:
+                progress_callback(0, len(frames), "Starting frame analysis")
+
             for i, frame_base64 in enumerate(frames):
                 try:
-                    logger.info(f"🎬 Analyzing frame {i+1}/{len(frames)}")
+                    current_frame = i + 1
+                    logger.info(f"🎬 Analyzing frame {current_frame}/{len(frames)}")
+
+                    # Update progress callback
+                    if progress_callback:
+                        progress_callback(i, len(frames), f"Analyzing frame {current_frame}")
+
                     analysis = await self._analyze_with_llm(frame_base64, "video_frame")
                     frame_analyses.append(analysis)
-                    logger.info(f"🎬 Successfully analyzed frame {i+1}/{len(frames)}")
+                    logger.info(f"🎬 Successfully analyzed frame {current_frame}/{len(frames)}")
+
+                    # Update progress callback after completion
+                    if progress_callback:
+                        progress_callback(current_frame, len(frames), f"Completed frame {current_frame}")
+
                 except Exception as e:
                     logger.error(f"🎬 Failed to analyze frame {i}: {e}")
                     continue
@@ -141,11 +159,17 @@ class LLMService:
             
             # Combine results from all frames
             logger.info(f"🎬 Combining analysis from {len(frame_analyses)} frames")
+            if progress_callback:
+                progress_callback(len(frames), len(frames), "Combining frame analyses")
+
             combined_result = await self._combine_frame_analyses(frame_analyses)
             logger.info(f"🎬 Combined description: {combined_result['description'][:100]}...")
 
             # Generate embedding from combined description
             logger.info(f"🎬 Generating embedding for video description")
+            if progress_callback:
+                progress_callback(len(frames), len(frames), "Generating embedding")
+
             embedding = await self._generate_embedding(combined_result["description"])
 
             processing_time = time.time() - start_time

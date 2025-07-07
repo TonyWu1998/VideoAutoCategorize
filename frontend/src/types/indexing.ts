@@ -22,6 +22,11 @@ export interface IndexingProgress {
   estimated_remaining_seconds?: number;
   files_per_second?: number;
   average_file_size?: number;
+
+  // Frame-level progress tracking for video analysis
+  current_file_frames_total?: number;
+  current_file_frames_processed?: number;
+  current_frame_activity?: string;
 }
 
 export interface IndexingStatusResponse {

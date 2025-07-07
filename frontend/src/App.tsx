@@ -6,10 +6,12 @@
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { CssBaseline, Container, Box, AppBar, Toolbar, Typography } from '@mui/material';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { useEffect } from 'react';
 import SearchBar from './components/SearchBar';
 import MediaGallery from './components/MediaGallery';
 import SettingsPanel from './components/SettingsPanel';
 import StatusBar from './components/StatusBar';
+import TaskProgressDashboard from './components/TaskProgressDashboard';
 import { useSearchStore } from './store/searchStore';
 
 // Create Material-UI theme
@@ -81,7 +83,12 @@ const queryClient = new QueryClient({
 });
 
 function App() {
-  const { searchResults, isLoading, error } = useSearchStore();
+  const { searchResults, isLoading, isLoadingAll, error, loadAllMedia } = useSearchStore();
+
+  // Load all media on app initialization
+  useEffect(() => {
+    loadAllMedia();
+  }, [loadAllMedia]);
 
   return (
     <QueryClientProvider client={queryClient}>
@@ -114,14 +121,17 @@ function App() {
           )}
 
           {/* Results Gallery */}
-          <MediaGallery 
-            results={searchResults} 
-            loading={isLoading}
+          <MediaGallery
+            results={searchResults}
+            loading={isLoading || isLoadingAll}
           />
 
           {/* Status Bar */}
           <StatusBar />
         </Container>
+
+        {/* Task Progress Dashboard */}
+        <TaskProgressDashboard />
       </ThemeProvider>
     </QueryClientProvider>
   );
