@@ -13,15 +13,17 @@ from pathlib import Path
 from app.database.schemas import PromptTemplate, PromptConfiguration, PROMPT_TEMPLATES_COLLECTION_NAME
 from app.config import settings
 from app.models.prompts import (
-    PromptTemplateRequest, 
+    PromptTemplateRequest,
     PromptTemplateResponse,
     PromptConfigurationRequest,
     PromptConfigurationResponse,
     MediaType
 )
-from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Special document ID for storing active configuration
+ACTIVE_CONFIG_DOCUMENT_ID = "active_prompt_configuration"
 
 
 class PromptManager:
@@ -52,6 +54,9 @@ class PromptManager:
         # Ensure prompt templates collection exists
         self._ensure_collection_exists()
 
+        # Ensure configuration collection exists
+        self._ensure_config_collection_exists()
+
         logger.info("PromptManager initialized")
     
     def _ensure_collection_exists(self):
@@ -66,6 +71,80 @@ class PromptManager:
         except Exception as e:
             logger.error(f"Failed to ensure prompt templates collection exists: {e}")
             raise
+
+    def _ensure_config_collection_exists(self):
+        """Ensure the configuration collection exists in ChromaDB."""
+        try:
+            # Get or create a separate collection for configuration
+            self.config_collection = self.client.get_or_create_collection(
+                name="prompt_configurations",
+                metadata={"hnsw:space": "cosine"}
+            )
+            logger.info("Prompt configuration collection ready")
+        except Exception as e:
+            logger.error(f"Failed to ensure configuration collection exists: {e}")
+            raise
+
+    async def _save_active_configuration(self, config: PromptConfiguration):
+        """Save active configuration to ChromaDB."""
+        try:
+            config_data = {
+                "active_image_prompt_id": config.active_image_prompt_id or "",
+                "active_video_prompt_id": config.active_video_prompt_id or "",
+                "last_updated": config.last_updated.isoformat(),
+                "updated_by": config.updated_by
+            }
+
+            # Check if configuration already exists
+            try:
+                existing = self.config_collection.get(ids=[ACTIVE_CONFIG_DOCUMENT_ID])
+                if existing['ids']:
+                    # Update existing
+                    self.config_collection.update(
+                        ids=[ACTIVE_CONFIG_DOCUMENT_ID],
+                        documents=[f"Active configuration updated {config.last_updated}"],
+                        metadatas=[config_data]
+                    )
+                    logger.info("Updated active configuration in ChromaDB")
+                else:
+                    raise Exception("Not found")  # Fall through to add
+            except:
+                # Add new configuration
+                self.config_collection.add(
+                    ids=[ACTIVE_CONFIG_DOCUMENT_ID],
+                    documents=[f"Active configuration created {config.last_updated}"],
+                    metadatas=[config_data]
+                )
+                logger.info("Saved new active configuration to ChromaDB")
+
+        except Exception as e:
+            logger.error(f"Failed to save active configuration: {e}")
+            raise
+
+    async def _load_active_configuration(self) -> Optional[PromptConfiguration]:
+        """Load active configuration from ChromaDB."""
+        try:
+            result = self.config_collection.get(ids=[ACTIVE_CONFIG_DOCUMENT_ID])
+
+            if not result['ids']:
+                logger.info("No active configuration found in ChromaDB")
+                return None
+
+            metadata = result['metadatas'][0]
+
+            config = PromptConfiguration(
+                active_image_prompt_id=metadata.get("active_image_prompt_id") or None,
+                active_video_prompt_id=metadata.get("active_video_prompt_id") or None,
+                last_updated=datetime.fromisoformat(metadata["last_updated"]),
+                updated_by=metadata.get("updated_by", "system")
+            )
+
+            logger.info("Loaded active configuration from ChromaDB")
+            return config
+
+        except Exception as e:
+            logger.warning(f"Failed to load active configuration from ChromaDB: {e}")
+            return None
     
     async def create_template(self, request: PromptTemplateRequest) -> PromptTemplateResponse:
         """
@@ -283,13 +362,20 @@ class PromptManager:
             if self._active_config_cache:
                 config = self._active_config_cache
             else:
-                # Load from settings or create default
-                config = PromptConfiguration(
-                    active_image_prompt_id=getattr(settings, 'ACTIVE_IMAGE_PROMPT_ID', None),
-                    active_video_prompt_id=getattr(settings, 'ACTIVE_VIDEO_PROMPT_ID', None),
-                    last_updated=datetime.now(timezone.utc),
-                    updated_by="system"
-                )
+                # Try to load from ChromaDB
+                config = await self._load_active_configuration()
+
+                if not config:
+                    # Create default configuration if none exists
+                    config = PromptConfiguration(
+                        active_image_prompt_id=settings.ACTIVE_IMAGE_PROMPT_ID,
+                        active_video_prompt_id=settings.ACTIVE_VIDEO_PROMPT_ID,
+                        last_updated=datetime.now(timezone.utc),
+                        updated_by="system"
+                    )
+                    # Save the default configuration
+                    await self._save_active_configuration(config)
+
                 self._active_config_cache = config
 
             # Get active prompt details
@@ -352,16 +438,13 @@ class PromptManager:
                 updated_by="user"
             )
 
-            # Update settings (in a real app, this would persist to database)
-            if hasattr(settings, 'ACTIVE_IMAGE_PROMPT_ID'):
-                settings.ACTIVE_IMAGE_PROMPT_ID = request.active_image_prompt_id
-            if hasattr(settings, 'ACTIVE_VIDEO_PROMPT_ID'):
-                settings.ACTIVE_VIDEO_PROMPT_ID = request.active_video_prompt_id
+            # Save to ChromaDB for persistence
+            await self._save_active_configuration(config)
 
             # Update cache
             self._active_config_cache = config
 
-            logger.info(f"Updated active prompt configuration")
+            logger.info(f"Updated active prompt configuration - Image: {request.active_image_prompt_id}, Video: {request.active_video_prompt_id}")
 
             return await self.get_active_configuration()
 
@@ -422,11 +505,18 @@ class PromptManager:
         try:
             config = await self.get_active_configuration()
 
+            logger.debug(f"Getting active prompt for {media_type}")
+            logger.debug(f"Active image prompt ID: {config.active_image_prompt_id}")
+            logger.debug(f"Active video prompt ID: {config.active_video_prompt_id}")
+
             if media_type == MediaType.IMAGE and config.active_image_prompt:
+                logger.info(f"Found active image prompt: {config.active_image_prompt.name}")
                 return config.active_image_prompt.prompt_text
             elif media_type == MediaType.VIDEO_FRAME and config.active_video_prompt:
+                logger.info(f"Found active video prompt: {config.active_video_prompt.name}")
                 return config.active_video_prompt.prompt_text
 
+            logger.info(f"No active prompt configured for {media_type}")
             return None
 
         except Exception as e:

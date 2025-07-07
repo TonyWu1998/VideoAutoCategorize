@@ -32,12 +32,17 @@ class IndexingService:
     def __init__(self):
         """Initialize the indexing service."""
         self.vector_db = VectorDatabase()
-        self.llm_service = LLMService()
+        # Don't cache LLM service - get fresh instance each time to ensure latest config
         self.current_job = None
         self.job_history = []
         self._file_watcher = None
-        
+
         logger.info("Indexing service initialized")
+
+    @property
+    def llm_service(self):
+        """Get the current LLM service instance (always fresh to pick up config changes)."""
+        return LLMService()
     
     async def start_indexing(self, request: IndexingRequest) -> str:
         """
@@ -130,31 +135,35 @@ class IndexingService:
     async def control_indexing(self, action: str, job_id: Optional[str] = None) -> bool:
         """
         Control indexing operations (pause, resume, cancel).
-        
+
         Args:
             action: Action to perform
             job_id: Optional specific job ID
-            
+
         Returns:
             True if successful
         """
         try:
             if not self.current_job:
                 raise ValueError("No active indexing job")
-            
+
+            current_job_id = self.current_job['job_id']
+
             if action == "cancel" or action == "stop":
                 self.current_job["status"] = IndexingStatus.CANCELLED
-                logger.info(f"Indexing job cancelled: {self.current_job['job_id']}")
+                # Cancel any ongoing LLM operations
+                self.llm_service.cancel_job(current_job_id)
+                logger.info(f"Indexing job cancelled: {current_job_id}")
             elif action == "pause":
                 self.current_job["status"] = IndexingStatus.PAUSED
-                logger.info(f"Indexing job paused: {self.current_job['job_id']}")
+                logger.info(f"Indexing job paused: {current_job_id}")
             elif action == "resume":
                 if self.current_job["status"] == IndexingStatus.PAUSED:
                     self.current_job["status"] = IndexingStatus.PROCESSING
-                    logger.info(f"Indexing job resumed: {self.current_job['job_id']}")
-            
+                    logger.info(f"Indexing job resumed: {current_job_id}")
+
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to control indexing: {e}")
             raise
@@ -462,7 +471,8 @@ class IndexingService:
                     media_doc.file_path,
                     progress_callback=frame_progress_callback,
                     store_frames=True,
-                    video_file_id=media_doc.file_id
+                    video_file_id=media_doc.file_id,
+                    job_id=self.current_job["job_id"] if self.current_job else None
                 )
 
             if not analysis_result or not analysis_result.get('description'):
@@ -710,7 +720,8 @@ class IndexingService:
                         file_path,
                         progress_callback=frame_progress_callback,
                         store_frames=True,
-                        video_file_id=file_id
+                        video_file_id=file_id,
+                        job_id=self.current_job["job_id"] if self.current_job else None  # Pass job ID for cancellation support
                     )
                     logger.info(f"📁 Video analysis completed for {file_name}")
                     logger.info(f"📁 Frames stored: {ai_result.get('frames_stored', 0)}")

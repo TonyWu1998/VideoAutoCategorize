@@ -113,8 +113,20 @@ async def update_llm_config(config: LLMConfigRequest):
             updated_settings["image_quality"] = config.image_quality
             
         if config.ollama_model is not None:
+            logger.info(f"🔍 Updating OLLAMA_MODEL from '{settings.OLLAMA_MODEL}' to '{config.ollama_model}'")
+            logger.info(f"🔍 Settings object ID in API: {id(settings)}")
             settings.OLLAMA_MODEL = config.ollama_model
+            logger.info(f"🔍 OLLAMA_MODEL after update: '{settings.OLLAMA_MODEL}'")
             updated_settings["ollama_model"] = config.ollama_model
+
+            # Refresh LLM service if model changed
+            try:
+                from app.services.llm_service import LLMService
+                LLMService.refresh_if_model_changed()
+                logger.info("🔄 LLM service refresh triggered after model update")
+            except Exception as e:
+                logger.warning(f"Failed to refresh LLM service: {e}")
+                # Don't fail the API call if refresh fails
             
         if config.ollama_embedding_model is not None:
             settings.OLLAMA_EMBEDDING_MODEL = config.ollama_embedding_model
@@ -164,7 +176,16 @@ async def reset_llm_config():
         settings.OLLAMA_EMBEDDING_MODEL = default_settings["ollama_embedding_model"]
         settings.OLLAMA_TIMEOUT = default_settings["ollama_timeout"]
         settings.ENABLE_ADVANCED_ANALYSIS = default_settings["enable_advanced_analysis"]
-        
+
+        # Refresh LLM service after resetting model
+        try:
+            from app.services.llm_service import LLMService
+            LLMService.refresh_if_model_changed()
+            logger.info("🔄 LLM service refresh triggered after reset")
+        except Exception as e:
+            logger.warning(f"Failed to refresh LLM service after reset: {e}")
+            # Don't fail the API call if refresh fails
+
         logger.info("Reset LLM configuration to defaults")
         
         return SettingsUpdateResponse(

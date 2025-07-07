@@ -199,8 +199,18 @@ const PromptLibrary: React.FC = () => {
               >
                 <CardContent sx={{ flex: 1 }}>
                   {/* Header */}
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 1 }}>
-                    <Box sx={{ flex: 1 }}>
+                  <Box sx={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'flex-start',
+                    mb: 1,
+                    minWidth: 0  // Allow flex items to shrink below their content size
+                  }}>
+                    <Box sx={{
+                      flex: 1,
+                      minWidth: 0,  // Allow text to truncate properly
+                      mr: 1  // Add margin to ensure space between text and button
+                    }}>
                       <Typography variant="h6" component="div" noWrap>
                         {template.name}
                       </Typography>
@@ -212,6 +222,7 @@ const PromptLibrary: React.FC = () => {
                       size="small"
                       onClick={(e) => handleMenuOpen(e, template)}
                       disabled={template.is_default && template.author === PromptAuthor.SYSTEM}
+                      sx={{ flexShrink: 0 }}  // Prevent the button from shrinking
                     >
                       <MoreVertIcon />
                     </IconButton>

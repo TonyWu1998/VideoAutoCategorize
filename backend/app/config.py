@@ -4,7 +4,6 @@ Configuration management for the Media Semantic Search application.
 
 from pydantic_settings import BaseSettings
 from typing import List, Optional
-import os
 from pathlib import Path
 
 
@@ -139,9 +138,17 @@ class Settings(BaseSettings):
     BACKUP_PATH: str = "./backups"
     
     # =============================================================================
+    # PROMPT CONFIGURATION
+    # =============================================================================
+
+    # Active prompt template IDs (will be overridden by persisted configuration)
+    ACTIVE_IMAGE_PROMPT_ID: Optional[str] = None
+    ACTIVE_VIDEO_PROMPT_ID: Optional[str] = None
+
+    # =============================================================================
     # EXPERIMENTAL FEATURES
     # =============================================================================
-    
+
     ENABLE_EXPERIMENTAL_FEATURES: bool = False
     ENABLE_ADVANCED_ANALYSIS: bool = False
     USE_GPU_ACCELERATION: bool = False

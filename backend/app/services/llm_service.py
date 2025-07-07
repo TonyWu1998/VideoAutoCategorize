@@ -24,29 +24,102 @@ logger = logging.getLogger(__name__)
 class LLMService:
     """
     Service for AI-powered analysis of images and videos using Ollama.
-    
+
     Provides methods for generating descriptions, tags, and embeddings
     for media files using local LLM models.
     """
-    
+
+    _instance = None
+    _initialized = False
+
+    def __new__(cls):
+        """Implement singleton pattern to ensure single LLM service instance."""
+        if cls._instance is None:
+            logger.info("🔍 Creating NEW LLM service singleton instance")
+            cls._instance = super(LLMService, cls).__new__(cls)
+            cls._instance._initialized = False  # Ensure instance-level flag
+        else:
+            logger.info("🔍 Returning EXISTING LLM service singleton instance")
+        return cls._instance
+
     def __init__(self):
-        """Initialize the LLM service with Ollama client."""
+        """Initialize the LLM service with Ollama client (only once)."""
+        if hasattr(self, '_initialized') and self._initialized:
+            logger.info("🔍 LLM service __init__ called but already initialized, skipping")
+            return
+
         try:
+            logger.info("🔍 LLM service __init__ starting initialization...")
+            logger.info(f"🔍 Settings object ID in __init__: {id(settings)}")
+            logger.info(f"🔍 Initial OLLAMA_MODEL value: {settings.OLLAMA_MODEL}")
+
             self.client = ollama.Client(host=settings.OLLAMA_BASE_URL)
-            self.model = settings.OLLAMA_MODEL
+            # Don't cache the model - use property to get current setting
             self.timeout = settings.OLLAMA_TIMEOUT
+
+            # Track the model we were initialized with for refresh detection
+            self._initialized_model = settings.OLLAMA_MODEL
 
             # Initialize prompt manager (lazy loading to avoid circular imports)
             self._prompt_manager = None
+
+            # Add cancellation support
+            self._cancelled_jobs = set()
 
             # Test connection
             self._test_connection()
 
             logger.info(f"LLM service initialized with model: {self.model}")
+            logger.info(f"🔍 LLM service initialization complete, _initialized = True")
+            self._initialized = True
 
         except Exception as e:
             logger.error(f"Failed to initialize LLM service: {e}")
             raise
+
+    @classmethod
+    def refresh_if_model_changed(cls):
+        """
+        Check if the model has changed and refresh the singleton if needed.
+        This should be called when model settings are updated via API.
+        """
+        if cls._instance is not None and hasattr(cls._instance, '_initialized_model'):
+            current_model = settings.OLLAMA_MODEL
+            initialized_model = cls._instance._initialized_model
+
+            if current_model != initialized_model:
+                logger.info(f"🔄 Model changed from '{initialized_model}' to '{current_model}' - refreshing LLM service")
+                cls._instance._refresh_internal()
+            else:
+                logger.info(f"🔍 Model unchanged ('{current_model}') - no refresh needed")
+        else:
+            logger.info("🔍 No LLM service instance to refresh")
+
+    def _refresh_internal(self):
+        """
+        Internal method to refresh the LLM service configuration.
+        Updates client settings and re-tests connection.
+        """
+        try:
+            logger.info("🔄 Refreshing LLM service internal configuration...")
+
+            # Update client configuration
+            self.client = ollama.Client(host=settings.OLLAMA_BASE_URL)
+            self.timeout = settings.OLLAMA_TIMEOUT
+
+            # Update the tracked model
+            old_model = self._initialized_model
+            self._initialized_model = settings.OLLAMA_MODEL
+
+            # Test connection with new model
+            self._test_connection()
+
+            logger.info(f"🔄 LLM service refreshed: '{old_model}' → '{self._initialized_model}'")
+
+        except Exception as e:
+            logger.error(f"Failed to refresh LLM service: {e}")
+            # Don't raise exception to avoid breaking existing functionality
+            logger.warning("Continuing with previous configuration")
 
     @property
     def prompt_manager(self):
@@ -55,6 +128,27 @@ class LLMService:
             from app.services.prompt_manager import PromptManager
             self._prompt_manager = PromptManager()
         return self._prompt_manager
+
+    @property
+    def model(self):
+        """Get the current Ollama model from settings (dynamic, not cached)."""
+        current_model = settings.OLLAMA_MODEL
+        logger.info(f"🔍 LLM service model property accessed, returning: {current_model}")
+        logger.info(f"🔍 Settings object ID: {id(settings)}, OLLAMA_MODEL ID: {id(settings.OLLAMA_MODEL)}")
+        return current_model
+
+    def cancel_job(self, job_id: str):
+        """Cancel a specific job by ID."""
+        self._cancelled_jobs.add(job_id)
+        logger.info(f"🛑 LLM job {job_id} marked for cancellation")
+
+    def is_job_cancelled(self, job_id: str) -> bool:
+        """Check if a job has been cancelled."""
+        return job_id in self._cancelled_jobs
+
+    def clear_cancelled_job(self, job_id: str):
+        """Clear a job from the cancelled set."""
+        self._cancelled_jobs.discard(job_id)
     
     async def analyze_image(self, image_path: str) -> Dict[str, Any]:
         """
@@ -112,7 +206,8 @@ class LLMService:
             return error_result
     
     async def analyze_video(self, video_path: str, progress_callback=None,
-                           store_frames: bool = True, video_file_id: Optional[str] = None) -> Dict[str, Any]:
+                           store_frames: bool = True, video_file_id: Optional[str] = None,
+                           job_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Analyze a video by extracting key frames and analyzing them.
 
@@ -157,6 +252,11 @@ class LLMService:
 
             for i, frame_info in enumerate(frame_data):
                 try:
+                    # Check for cancellation
+                    if job_id and self.is_job_cancelled(job_id):
+                        logger.info(f"🛑 Video analysis cancelled for job {job_id}")
+                        break
+
                     current_frame = i + 1
                     frame_base64 = frame_info['base64']
                     timestamp = frame_info['timestamp']
@@ -168,7 +268,7 @@ class LLMService:
                     if progress_callback:
                         progress_callback(i, len(frames), f"Analyzing frame {current_frame}")
 
-                    analysis = await self._analyze_with_llm(frame_base64, "video_frame")
+                    analysis = await self._analyze_with_llm(frame_base64, "video_frame", job_id)
                     frame_analyses.append(analysis)
 
                     # Store individual frame if requested
@@ -374,7 +474,7 @@ class LLMService:
             logger.error(f"Failed to extract frames from video {video_path}: {e}")
             return []
     
-    async def _analyze_with_llm(self, image_base64: str, media_type: str) -> Dict[str, Any]:
+    async def _analyze_with_llm(self, image_base64: str, media_type: str, job_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Analyze image with LLM to generate description and tags.
 
@@ -386,6 +486,11 @@ class LLMService:
             Dictionary with description, tags, and confidence
         """
         try:
+            # Check for cancellation before starting
+            if job_id and self.is_job_cancelled(job_id):
+                logger.info(f"🛑 LLM analysis cancelled for job {job_id}")
+                return self._create_fallback_result("Analysis cancelled")
+
             logger.info(f"🤖 Starting LLM analysis for media_type: {media_type}")
 
             # Get analysis prompt from prompt manager or use default
@@ -454,12 +559,15 @@ class LLMService:
             custom_prompt = await self.prompt_manager.get_active_prompt_text(prompt_media_type)
 
             if custom_prompt:
-                logger.info(f"🤖 Using custom prompt for {media_type}")
+                logger.info(f"🤖 Using custom prompt for {media_type} (length: {len(custom_prompt)} chars)")
+                logger.debug(f"🤖 Custom prompt preview: {custom_prompt[:100]}...")
                 return custom_prompt
 
             # Fall back to default prompts
-            logger.info(f"🤖 Using default prompt for {media_type}")
-            return self._get_default_prompt(media_type)
+            logger.info(f"🤖 Using default prompt for {media_type} (no custom prompt configured)")
+            default_prompt = self._get_default_prompt(media_type)
+            logger.debug(f"🤖 Default prompt preview: {default_prompt[:100]}...")
+            return default_prompt
 
         except Exception as e:
             logger.warning(f"Failed to get custom prompt for {media_type}, using default: {e}")
