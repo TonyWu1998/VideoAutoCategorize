@@ -142,27 +142,33 @@ pids
 *.seed
 *.pid.lock
 
-# Application-specific
+# Application-specific files
 data/
-!data/.gitkeep
-logs/
-!logs/.gitkeep
 backups/
-!backups/.gitkeep
 
-# ChromaDB
-*.db
-*.sqlite
+# ChromaDB database files
 *.sqlite3
+chroma_db/
+backend/data/
+data/chroma_db/
 
 # Thumbnails and cache
 thumbnails/
 cache/
 .cache/
 
-# Media files (for testing)
+# Media files (for testing purposes - exclude from repo)
 test_media/
-sample_media/
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.bmp
+*.tiff
 
 # OS generated files
 .DS_Store
@@ -200,7 +206,6 @@ docker-compose.override.yml
 .terraform/
 
 # Secrets
-secrets/
 *.key
 *.pem
 *.crt
@@ -213,10 +218,10 @@ secrets/
 *.7z
 
 # Model files (if stored locally)
-models/
 *.bin
 *.safetensors
 *.gguf
 
 # Ollama data (if stored in project)
 ollama_data/
+models/
