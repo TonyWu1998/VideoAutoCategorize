@@ -57,8 +57,9 @@ class LLMService:
             # Don't cache the model - use property to get current setting
             self.timeout = settings.OLLAMA_TIMEOUT
 
-            # Track the model we were initialized with for refresh detection
+            # Track the model and base URL we were initialized with for refresh detection
             self._initialized_model = settings.OLLAMA_MODEL
+            self._initialized_base_url = settings.OLLAMA_BASE_URL
 
             # Initialize prompt manager (lazy loading to avoid circular imports)
             self._prompt_manager = None
@@ -80,18 +81,29 @@ class LLMService:
     @classmethod
     def refresh_if_model_changed(cls):
         """
-        Check if the model has changed and refresh the singleton if needed.
+        Check if the model or base URL has changed and refresh the singleton if needed.
         This should be called when model settings are updated via API.
         """
         if cls._instance is not None and hasattr(cls._instance, '_initialized_model'):
             current_model = settings.OLLAMA_MODEL
+            current_base_url = settings.OLLAMA_BASE_URL
             initialized_model = cls._instance._initialized_model
+            initialized_base_url = getattr(cls._instance, '_initialized_base_url', 'http://localhost:11434')
 
-            if current_model != initialized_model:
-                logger.info(f"🔄 Model changed from '{initialized_model}' to '{current_model}' - refreshing LLM service")
+            model_changed = current_model != initialized_model
+            base_url_changed = current_base_url != initialized_base_url
+
+            if model_changed or base_url_changed:
+                changes = []
+                if model_changed:
+                    changes.append(f"model: '{initialized_model}' → '{current_model}'")
+                if base_url_changed:
+                    changes.append(f"base_url: '{initialized_base_url}' → '{current_base_url}'")
+
+                logger.info(f"🔄 Configuration changed ({', '.join(changes)}) - refreshing LLM service")
                 cls._instance._refresh_internal()
             else:
-                logger.info(f"🔍 Model unchanged ('{current_model}') - no refresh needed")
+                logger.info(f"🔍 Configuration unchanged (model: '{current_model}', base_url: '{current_base_url}') - no refresh needed")
         else:
             logger.info("🔍 No LLM service instance to refresh")
 
@@ -107,14 +119,16 @@ class LLMService:
             self.client = ollama.Client(host=settings.OLLAMA_BASE_URL)
             self.timeout = settings.OLLAMA_TIMEOUT
 
-            # Update the tracked model
+            # Update the tracked model and base URL
             old_model = self._initialized_model
+            old_base_url = getattr(self, '_initialized_base_url', 'http://localhost:11434')
             self._initialized_model = settings.OLLAMA_MODEL
+            self._initialized_base_url = settings.OLLAMA_BASE_URL
 
             # Test connection with new model
             self._test_connection()
 
-            logger.info(f"🔄 LLM service refreshed: '{old_model}' → '{self._initialized_model}'")
+            logger.info(f"🔄 LLM service refreshed: model '{old_model}' → '{self._initialized_model}', base_url '{old_base_url}' → '{self._initialized_base_url}'")
 
         except Exception as e:
             logger.error(f"Failed to refresh LLM service: {e}")
@@ -497,7 +511,7 @@ class LLMService:
             prompt = await self._get_analysis_prompt(media_type)
             logger.info(f"🤖 Using prompt for {media_type} analysis")
 
-            # Call Ollama API with conservative options for stability
+            # Call Ollama API with options optimized for complex JSON responses
             logger.info(f"🤖 Calling Ollama API with model: {self.model}")
             response = await asyncio.to_thread(
                 self.client.generate,
@@ -507,12 +521,12 @@ class LLMService:
                 options={
                     "temperature": 0.3,  # Conservative temperature
                     "top_p": 0.9,
-                    "num_predict": 250,  # Reasonable token limit
+                    "num_predict": 50000,  # Increased token limit for complex JSON responses
                     "repeat_penalty": 1.1  # Reduce repetition
                 }
             )
 
-            logger.info(f"🤖 Raw LLM response: {response.get('response', 'No response')[:200]}...")
+            logger.info(f"🤖 Raw LLM response: {response.get('response', 'No response')[:50000]}...")
 
             # Validate response
             raw_response = response.get('response', '')
@@ -711,6 +725,12 @@ Tags:"""
                     data = json.loads(cleaned_response)
                     logger.info(f"🔧 Successfully parsed JSON: {data}")
 
+                    # Check if this is a specialized adult content analysis response
+                    if self._is_specialized_adult_analysis(data):
+                        logger.info(f"🔧 Detected specialized adult analysis format")
+                        return self._parse_specialized_adult_analysis(data)
+
+                    # Handle standard format
                     description = data.get('description', '')
                     tags = []
 
@@ -736,27 +756,61 @@ Tags:"""
 
                 except json.JSONDecodeError as e:
                     logger.warning(f"🔧 JSON parsing failed: {e}")
+                    logger.warning(f"🔧 Problematic JSON content: {cleaned_response[:200]}...")
+
+                    # Try to fix common JSON issues before falling back
+                    fixed_json = self._attempt_json_repair(cleaned_response)
+                    if fixed_json:
+                        try:
+                            data = json.loads(fixed_json)
+                            logger.info(f"🔧 Successfully parsed repaired JSON")
+
+                            # Check if this is a specialized adult content analysis response
+                            if self._is_specialized_adult_analysis(data):
+                                logger.info(f"🔧 Detected specialized adult analysis format in repaired JSON")
+                                return self._parse_specialized_adult_analysis(data)
+
+                            # Handle standard format for repaired JSON
+                            description = data.get('description', '')
+                            tags = []
+                            for field in ['objects', 'setting', 'mood', 'colors', 'tags']:
+                                if field in data:
+                                    value = data[field]
+                                    if isinstance(value, list):
+                                        tags.extend(value)
+                                    elif isinstance(value, str) and value:
+                                        tags.append(value)
+
+                            tags = list(set([tag.strip().lower() for tag in tags if tag.strip()]))
+
+                            return {
+                                "description": description,
+                                "tags": tags,
+                                "confidence": 0.7  # Lower confidence for repaired JSON
+                            }
+
+                        except json.JSONDecodeError:
+                            logger.warning(f"🔧 JSON repair attempt failed, falling back to unstructured parsing")
+
                     # Fall through to unstructured parsing
 
-            # Fallback: parse unstructured response
-            logger.info(f"🔧 Using unstructured parsing fallback")
-            result = self._parse_unstructured_response(cleaned_response)
-            logger.info(f"🔧 Unstructured parsing result: {result}")
+            # Fallback: parse unstructured response with enhanced extraction
+            logger.info(f"🔧 Using enhanced unstructured parsing fallback")
+            result = self._parse_unstructured_response_enhanced(cleaned_response, response)
+            logger.info(f"🔧 Enhanced unstructured parsing result: {result}")
             return result
 
         except Exception as e:
             logger.error(f"🔧 Failed to parse LLM response: {e}")
-            fallback_result = {
-                "description": response[:200] if response else "Analysis completed",
-                "tags": [],
-                "confidence": 0.3
-            }
-            logger.error(f"🔧 Using fallback result: {fallback_result}")
+            # Enhanced fallback that tries to extract meaningful content
+            fallback_result = self._create_enhanced_fallback_result(response)
+            logger.error(f"🔧 Using enhanced fallback result: {fallback_result}")
             return fallback_result
 
     def _clean_llm_response(self, response: str) -> str:
         """
         Clean LLM response by removing markdown code blocks and extra text.
+        Enhanced to handle truncated responses and extract partial JSON.
 
         Args:
             response: Raw LLM response
@@ -767,6 +821,15 @@ Tags:"""
         if not response:
             return ""
 
+        logger.info(f"🔧 Cleaning response (length: {len(response)})")
+
+        # Check for truncation indicators
+        is_truncated = response.endswith('...') or response.endswith('…')
+        if is_truncated:
+            logger.warning(f"🔧 Response appears to be truncated")
+            # Remove truncation indicators
+            response = response.rstrip('.…').strip()
+
         # Remove common prefixes that LLMs add
         prefixes_to_remove = [
             "```json",
@@ -776,30 +839,535 @@ Tags:"""
             "Here is the analysis:",
             "Analysis:",
             "JSON:",
+            "Based on the image, here's the analysis:",
+            "Looking at this image, here's the analysis:",
         ]
 
         cleaned = response.strip()
 
         # Remove prefixes
         for prefix in prefixes_to_remove:
-            if cleaned.startswith(prefix):
+            if cleaned.lower().startswith(prefix.lower()):
                 cleaned = cleaned[len(prefix):].strip()
 
         # Remove trailing markdown blocks
         if cleaned.endswith("```"):
             cleaned = cleaned[:-3].strip()
 
-        # Find JSON content between braces if it exists
+        # Find JSON content between braces
         start_brace = cleaned.find('{')
-        end_brace = cleaned.rfind('}')
 
-        if start_brace != -1 and end_brace != -1 and end_brace > start_brace:
-            json_content = cleaned[start_brace:end_brace + 1]
-            logger.info(f"🔧 Extracted JSON content: {json_content[:100]}...")
-            return json_content
+        if start_brace != -1:
+            # Look for the last complete closing brace
+            end_brace = cleaned.rfind('}')
 
-        logger.info(f"🔧 No JSON braces found, returning cleaned text")
+            if end_brace != -1 and end_brace > start_brace:
+                json_content = cleaned[start_brace:end_brace + 1]
+                logger.info(f"🔧 Extracted complete JSON content: {json_content[:100]}...")
+                return json_content
+            else:
+                # Handle truncated JSON - try to find a reasonable stopping point
+                logger.warning(f"🔧 JSON appears incomplete, attempting to extract partial content")
+
+                # Try to find the last complete field or object
+                partial_json = cleaned[start_brace:]
+
+                # Look for common patterns that might indicate a good stopping point
+                # Try to find the last complete quoted string or number
+                last_quote = partial_json.rfind('"')
+                last_comma = partial_json.rfind(',')
+                last_bracket = partial_json.rfind(']')
+
+                # Find the best stopping point
+                stop_points = [i for i in [last_quote, last_comma, last_bracket] if i > 0]
+
+                if stop_points:
+                    best_stop = max(stop_points)
+                    # Add closing brace if we found a reasonable stopping point
+                    if best_stop > 10:  # Only if we have substantial content
+                        truncated_json = partial_json[:best_stop + 1]
+                        # Try to balance braces
+                        open_braces = truncated_json.count('{')
+                        close_braces = truncated_json.count('}')
+
+                        # Add missing closing braces
+                        missing_braces = open_braces - close_braces
+                        if missing_braces > 0:
+                            truncated_json += '}' * missing_braces
+
+                        logger.info(f"🔧 Reconstructed truncated JSON: {truncated_json[:100]}...")
+                        return truncated_json
+
+        logger.info(f"🔧 No JSON braces found or unable to extract, returning cleaned text")
         return cleaned
+
+    def _is_specialized_adult_analysis(self, data: Dict[str, Any]) -> bool:
+        """
+        Check if the JSON response is from a specialized adult content analysis prompt.
+
+        Supports three specialized prompt formats:
+        1. detailed_adult_analysis - Comprehensive analysis with participants, clothing, scenario
+        2. fetish_focused_analysis - Fetish-specific analysis with categories and focus areas
+        3. clothing_accessory_analysis - Detailed clothing and accessory inventory
+
+        Args:
+            data: Parsed JSON data
+
+        Returns:
+            True if this is a specialized adult analysis format
+        """
+        # Check for specialized adult analysis structure indicators
+        detailed_analysis_indicators = [
+            'participants',
+            'clothing_accessories',
+            'scenario_type',
+            'visual_elements',
+            'mood_atmosphere'
+        ]
+
+        fetish_analysis_indicators = [
+            'fetish_categories',
+            'clothing_focus',
+            'scenario_elements',
+            'power_dynamics'
+        ]
+
+        clothing_analysis_indicators = [
+            'clothing_inventory',
+            'accessories',
+            'styling_elements',
+            'special_focus_items'
+        ]
+
+        # Check for any specialized fields from any format
+        all_indicators = detailed_analysis_indicators + fetish_analysis_indicators + clothing_analysis_indicators
+
+        for indicator in all_indicators:
+            if indicator in data:
+                logger.info(f"🔧 Found specialized indicator: {indicator}")
+                return True
+
+        # Check for nested structures that indicate specialized format
+        if 'participants' in data and isinstance(data['participants'], dict):
+            return True
+
+        # Check for complex clothing structures
+        if 'clothing_focus' in data and isinstance(data['clothing_focus'], dict):
+            return True
+
+        if 'clothing_inventory' in data and isinstance(data['clothing_inventory'], dict):
+            return True
+
+        return False
+
+    def _parse_specialized_adult_analysis(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Parse specialized adult content analysis JSON response.
+
+        Handles three specialized prompt formats:
+        1. detailed_adult_analysis - Comprehensive analysis with participants, clothing, scenario
+        2. fetish_focused_analysis - Fetish-specific analysis with categories and focus areas
+        3. clothing_accessory_analysis - Detailed clothing and accessory inventory
+
+        Args:
+            data: Parsed JSON data from specialized prompt
+
+        Returns:
+            Structured analysis result compatible with system expectations
+        """
+        try:
+            logger.info(f"🔧 Parsing specialized adult analysis data")
+
+            # Extract description
+            description = data.get('description', '')
+
+            # Initialize tags list
+            tags = []
+
+            # 1. DETAILED ADULT ANALYSIS FORMAT
+            # Extract tags from direct tag sources
+            tag_sources = [
+                ('tags', lambda x: x if isinstance(x, list) else []),
+                ('scenario_type', lambda x: x if isinstance(x, list) else [x] if isinstance(x, str) else []),
+                ('fetish_categories', lambda x: x if isinstance(x, list) else []),
+            ]
+
+            for field, processor in tag_sources:
+                if field in data:
+                    processed_tags = processor(data[field])
+                    tags.extend(processed_tags)
+
+            # Extract from participants structure
+            if 'participants' in data and isinstance(data['participants'], dict):
+                participants = data['participants']
+                for subfield in ['characteristics', 'roles']:
+                    if subfield in participants and isinstance(participants[subfield], list):
+                        tags.extend(participants[subfield])
+
+            # Extract from clothing_accessories structure
+            if 'clothing_accessories' in data and isinstance(data['clothing_accessories'], dict):
+                clothing_acc = data['clothing_accessories']
+                for subfield in ['notable_items', 'special_focus']:
+                    if subfield in clothing_acc and isinstance(clothing_acc[subfield], list):
+                        tags.extend(clothing_acc[subfield])
+                if 'clothing_style' in clothing_acc and isinstance(clothing_acc['clothing_style'], str):
+                    tags.append(clothing_acc['clothing_style'])
+
+            # Extract from visual_elements structure
+            if 'visual_elements' in data and isinstance(data['visual_elements'], dict):
+                visual = data['visual_elements']
+                for subfield in ['focus_areas']:
+                    if subfield in visual and isinstance(visual[subfield], list):
+                        tags.extend(visual[subfield])
+                for subfield in ['lighting', 'camera_angle']:
+                    if subfield in visual and isinstance(visual[subfield], str):
+                        tags.append(visual[subfield])
+
+            # 2. FETISH FOCUSED ANALYSIS FORMAT
+            # Extract from clothing_focus structure
+            if 'clothing_focus' in data and isinstance(data['clothing_focus'], dict):
+                clothing_focus = data['clothing_focus']
+                for category, items in clothing_focus.items():
+                    if isinstance(items, list):
+                        tags.extend(items)
+                    elif isinstance(items, str) and items:
+                        tags.append(items)
+
+            # Extract from scenario_elements structure
+            if 'scenario_elements' in data and isinstance(data['scenario_elements'], dict):
+                scenario = data['scenario_elements']
+                for subfield in ['activities', 'props_environment']:
+                    if subfield in scenario and isinstance(scenario[subfield], list):
+                        tags.extend(scenario[subfield])
+                if 'power_dynamics' in scenario and isinstance(scenario['power_dynamics'], str):
+                    tags.append(scenario['power_dynamics'])
+
+            # Extract from visual_emphasis structure
+            if 'visual_emphasis' in data and isinstance(data['visual_emphasis'], dict):
+                visual_emp = data['visual_emphasis']
+                for subfield in ['secondary_elements']:
+                    if subfield in visual_emp and isinstance(visual_emp[subfield], list):
+                        tags.extend(visual_emp[subfield])
+                for subfield in ['primary_focus', 'camera_work']:
+                    if subfield in visual_emp and isinstance(visual_emp[subfield], str):
+                        tags.append(visual_emp[subfield])
+
+            # 3. CLOTHING ACCESSORY ANALYSIS FORMAT
+            # Extract from clothing_inventory structure
+            if 'clothing_inventory' in data and isinstance(data['clothing_inventory'], dict):
+                inventory = data['clothing_inventory']
+                for category, items in inventory.items():
+                    if isinstance(items, list):
+                        tags.extend(items)
+                    elif isinstance(items, str) and items:
+                        tags.append(items)
+
+            # Extract from accessories structure
+            if 'accessories' in data and isinstance(data['accessories'], dict):
+                accessories = data['accessories']
+                for category, items in accessories.items():
+                    if isinstance(items, list):
+                        tags.extend(items)
+                    elif isinstance(items, str) and items:
+                        tags.append(items)
+
+            # Extract from styling_elements structure
+            if 'styling_elements' in data and isinstance(data['styling_elements'], dict):
+                styling = data['styling_elements']
+                for subfield in ['fit_style', 'condition']:
+                    if subfield in styling and isinstance(styling[subfield], list):
+                        tags.extend(styling[subfield])
+                for subfield in ['overall_style', 'color_scheme']:
+                    if subfield in styling and isinstance(styling[subfield], str):
+                        tags.append(styling[subfield])
+
+            # Extract from special_focus_items structure
+            if 'special_focus_items' in data and isinstance(data['special_focus_items'], dict):
+                for category, description in data['special_focus_items'].items():
+                    if isinstance(description, str) and description and description.lower() not in ['none', 'n/a', '', 'not present']:
+                        # Extract meaningful content from descriptions
+                        if len(description) > 10:  # Substantial description
+                            # Add the category as a tag if it's meaningful
+                            if category in ['white_socks', 'uniforms', 'fetish_items', 'signature_pieces']:
+                                tags.append(category.replace('_', ' '))
+                            # Extract key terms from the description
+                            import re
+                            key_terms = re.findall(r'[\u4e00-\u9fff]+|[a-zA-Z]+(?:\s+[a-zA-Z]+)*', description)
+                            for term in key_terms:
+                                if len(term.strip()) > 2:
+                                    tags.append(term.strip())
+
+            # COMMON EXTRACTION FOR ALL FORMATS
+            # Extract setting and mood information
+            for field in ['setting', 'mood_atmosphere']:
+                if field in data and isinstance(data[field], str) and data[field]:
+                    tags.append(data[field])
+
+            # Clean and process tags
+            cleaned_tags = self._clean_and_process_tags(tags)
+
+            result = {
+                "description": description or "Specialized adult content analysis completed",
+                "tags": cleaned_tags,
+                "confidence": 0.9  # High confidence for specialized structured response
+            }
+
+            logger.info(f"🔧 Specialized parsing result: description length={len(result['description'])}, tags count={len(result['tags'])}")
+            logger.debug(f"🔧 Extracted tags: {result['tags'][:10]}...")  # Log first 10 tags
+
+            return result
+
+        except Exception as e:
+            logger.error(f"🔧 Failed to parse specialized adult analysis: {e}")
+            # Fallback to basic parsing
+            return {
+                "description": data.get('description', 'Specialized analysis completed'),
+                "tags": data.get('tags', []) if isinstance(data.get('tags'), list) else [],
+                "confidence": 0.7
+            }
+
+    def _clean_and_process_tags(self, tags: List[str]) -> List[str]:
+        """
+        Clean and process tags extracted from specialized adult content analysis.
+
+        Args:
+            tags: Raw list of tags from various sources
+
+        Returns:
+            Cleaned and deduplicated list of tags
+        """
+        cleaned_tags = []
+
+        # Common words to filter out
+        common_words = {
+            'the', 'and', 'or', 'with', 'for', 'in', 'on', 'at', 'to', 'of', 'a', 'an',
+            'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had',
+            'description', 'analysis', 'image', 'video', 'frame', 'content', 'scene'
+        }
+
+        for tag in tags:
+            if isinstance(tag, str):
+                # Clean the tag
+                clean_tag = tag.strip().lower()
+
+                # Remove quotes and special characters but preserve Chinese characters
+                clean_tag = clean_tag.replace('"', '').replace("'", "").replace('(', '').replace(')', '')
+
+                # Skip empty tags, very short tags, and common words
+                if (clean_tag and
+                    len(clean_tag) > 2 and
+                    clean_tag not in common_words and
+                    not clean_tag.isdigit()):  # Skip pure numbers
+
+                    # Handle Chinese/English mixed content
+                    # Keep Chinese characters and meaningful English terms
+                    import re
+                    if re.search(r'[\u4e00-\u9fff]', clean_tag) or len(clean_tag) >= 3:
+                        cleaned_tags.append(clean_tag)
+
+        # Remove duplicates while preserving order
+        seen = set()
+        final_tags = []
+        for tag in cleaned_tags:
+            if tag not in seen:
+                seen.add(tag)
+                final_tags.append(tag)
+
+        # Limit to reasonable number of tags (increased for specialized content)
+        final_tags = final_tags[:30]
+
+        return final_tags
+
+    def _attempt_json_repair(self, json_str: str) -> Optional[str]:
+        """
+        Attempt to repair common JSON formatting issues.
+
+        Args:
+            json_str: Potentially malformed JSON string
+
+        Returns:
+            Repaired JSON string or None if repair failed
+        """
+        try:
+            logger.info(f"🔧 Attempting JSON repair on: {json_str[:100]}...")
+
+            # Common fixes for malformed JSON
+            repaired = json_str.strip()
+
+            # Handle truncated strings - find incomplete quoted strings and close them
+            import re
+
+            # Find the last quote and check if it's properly closed
+            quote_positions = [m.start() for m in re.finditer(r'"', repaired)]
+            if quote_positions and len(quote_positions) % 2 != 0:
+                # Odd number of quotes means we have an unclosed string
+                last_quote_pos = quote_positions[-1]
+                # Find the end of the incomplete content
+                remaining = repaired[last_quote_pos + 1:]
+
+                # Look for a reasonable place to close the string
+                # Find the last word or meaningful content
+                truncation_patterns = [r'[^"]*?(?=\s*[,}\]]|$)', r'[^"]*?(?=\s*$)']
+
+                for pattern in truncation_patterns:
+                    match = re.search(pattern, remaining)
+                    if match:
+                        # Close the string at the end of meaningful content
+                        close_pos = last_quote_pos + 1 + match.end()
+                        repaired = repaired[:close_pos] + '"' + repaired[close_pos:]
+                        break
+                else:
+                    # Fallback: just close the quote
+                    repaired += '"'
+
+            # Fix missing closing brackets/braces
+            open_braces = repaired.count('{')
+            close_braces = repaired.count('}')
+            if open_braces > close_braces:
+                repaired += '}' * (open_braces - close_braces)
+
+            open_brackets = repaired.count('[')
+            close_brackets = repaired.count(']')
+            if open_brackets > close_brackets:
+                repaired += ']' * (open_brackets - close_brackets)
+
+            # Fix trailing commas before closing braces/brackets
+            repaired = re.sub(r',\s*}', '}', repaired)
+            repaired = re.sub(r',\s*]', ']', repaired)
+
+            # Fix common Chinese/English mixed content issues
+            repaired = repaired.replace('，', ',')  # Chinese comma to English comma
+            repaired = repaired.replace('：', ':')  # Chinese colon to English colon
+
+            # Handle incomplete array elements - if we end with a comma and incomplete content
+            # Remove trailing incomplete elements
+            repaired = re.sub(r',\s*"[^"]*$', '', repaired)
+
+            # Try to validate the repaired JSON
+            json.loads(repaired)
+            logger.info(f"🔧 JSON repair successful")
+            return repaired
+
+        except Exception as e:
+            logger.warning(f"🔧 JSON repair failed: {e}")
+            return None
+
+    def _parse_unstructured_response_enhanced(self, cleaned_response: str, original_response: str) -> Dict[str, Any]:
+        """
+        Enhanced unstructured response parsing with better content extraction.
+
+        Args:
+            cleaned_response: Cleaned response text
+            original_response: Original raw response
+
+        Returns:
+            Structured analysis result
+        """
+        logger.info(f"🔧 Enhanced unstructured parsing")
+
+        # Try to extract meaningful content from the response
+        description = ""
+        tags = []
+
+        # Look for description-like content
+        lines = cleaned_response.split('\n')
+        for line in lines:
+            line = line.strip()
+            if line and len(line) > 20:  # Substantial content
+                # Skip lines that look like field names or JSON structure
+                if not any(indicator in line.lower() for indicator in ['description', 'tags', 'participants', 'clothing']):
+                    if not description:
+                        description = line
+                        break
+
+        # If no description found in cleaned response, try original
+        if not description:
+            orig_lines = original_response.split('\n')
+            for line in orig_lines:
+                line = line.strip()
+                if line and len(line) > 20 and not line.startswith('{') and not line.startswith('"'):
+                    description = line
+                    break
+
+        # Extract potential tags using multiple strategies
+        text_to_analyze = cleaned_response + " " + original_response
+
+        # Strategy 1: Look for quoted strings (potential tags)
+        import re
+        quoted_strings = re.findall(r'"([^"]+)"', text_to_analyze)
+        for string in quoted_strings:
+            if len(string) > 2 and len(string) < 30:  # Reasonable tag length
+                tags.append(string.lower())
+
+        # Strategy 2: Look for comma-separated values
+        comma_separated = re.findall(r'[,，]\s*([^,，\n\r"]+)', text_to_analyze)
+        for item in comma_separated:
+            clean_item = item.strip().lower()
+            if len(clean_item) > 2 and len(clean_item) < 30:
+                tags.append(clean_item)
+
+        # Strategy 3: Extract Chinese/English mixed content
+        chinese_english_pattern = r'[\u4e00-\u9fff]+|[a-zA-Z]+(?:\s+[a-zA-Z]+)*'
+        matches = re.findall(chinese_english_pattern, text_to_analyze)
+        for match in matches:
+            clean_match = match.strip().lower()
+            if len(clean_match) > 2 and len(clean_match) < 30:
+                tags.append(clean_match)
+
+        # Clean and deduplicate tags
+        cleaned_tags = []
+        common_words = {'the', 'and', 'or', 'with', 'for', 'in', 'on', 'at', 'description', 'tags', 'analysis', 'image', 'video'}
+
+        for tag in tags:
+            clean_tag = tag.strip().lower()
+            if clean_tag and clean_tag not in common_words and len(clean_tag) > 2:
+                cleaned_tags.append(clean_tag)
+
+        # Remove duplicates while preserving order
+        final_tags = []
+        seen = set()
+        for tag in cleaned_tags:
+            if tag not in seen:
+                seen.add(tag)
+                final_tags.append(tag)
+
+        # Limit tags
+        final_tags = final_tags[:15]
+
+        return {
+            "description": description or "Content analysis completed",
+            "tags": final_tags,
+            "confidence": 0.5  # Medium confidence for enhanced unstructured parsing
+        }
+
+    def _create_enhanced_fallback_result(self, response: str) -> Dict[str, Any]:
+        """
+        Create an enhanced fallback result when all parsing fails.
+
+        Args:
+            response: Original response text
+
+        Returns:
+            Basic analysis result with extracted content
+        """
+        # Try to extract any meaningful text
+        if response:
+            # Clean up the response for description
+            lines = response.split('\n')
+            meaningful_lines = [line.strip() for line in lines if line.strip() and len(line.strip()) > 10]
+
+            if meaningful_lines:
+                description = meaningful_lines[0][:200]  # First meaningful line, truncated
+            else:
+                description = response[:100].strip()
+        else:
+            description = "Analysis completed"
+
+        return {
+            "description": description,
+            "tags": [],
+            "confidence": 0.2  # Low confidence for fallback
+        }
 
     def _parse_unstructured_response(self, response: str) -> Dict[str, Any]:
         """

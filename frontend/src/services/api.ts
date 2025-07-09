@@ -48,6 +48,23 @@ export interface AvailableModelsResponse {
   message?: string;
 }
 
+// Ollama Endpoint Testing Types
+export interface OllamaEndpointTestRequest {
+  base_url: string;
+}
+
+export interface OllamaEndpointTestResponse {
+  success: boolean;
+  accessible: boolean;
+  base_url: string;
+  response_time_ms?: number;
+  models_count?: number;
+  vision_models_count?: number;
+  embedding_models_count?: number;
+  error_message?: string;
+  message: string;
+}
+
 // API configuration
 const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:8000';
 const API_TIMEOUT = 30000; // 30 seconds for regular operations
@@ -543,6 +560,14 @@ export const configAPI = {
    */
   getAvailableModels: async (): Promise<AvailableModelsResponse> => {
     const response = await apiClient.get('/api/config/ollama/models');
+    return response.data;
+  },
+
+  /**
+   * Test Ollama endpoint connectivity
+   */
+  testOllamaEndpoint: async (request: OllamaEndpointTestRequest): Promise<OllamaEndpointTestResponse> => {
+    const response = await apiClient.post('/api/config/ollama/test-endpoint', request);
     return response.data;
   },
 };

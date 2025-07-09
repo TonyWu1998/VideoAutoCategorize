@@ -81,6 +81,7 @@ const SettingsPanel: React.FC = () => {
     image_quality: 85,
     ollama_model: 'gemma3:4b',
     ollama_embedding_model: 'nomic-embed-text',
+    ollama_base_url: 'http://localhost:11434',
     ollama_timeout: 120,
     enable_advanced_analysis: false,
     confidence_threshold: 0.5,
@@ -89,6 +90,10 @@ const SettingsPanel: React.FC = () => {
 
   // Available models state
   const [availableModels, setAvailableModels] = useState<AvailableModelsResponse | null>(null);
+
+  // Endpoint testing state
+  const [endpointTestResult, setEndpointTestResult] = useState<any>(null);
+  const [isTestingEndpoint, setIsTestingEndpoint] = useState(false);
 
   const queryClient = useQueryClient();
   const { clearAllData, startIndexingMonitor } = useSearchStore();
@@ -274,6 +279,40 @@ const SettingsPanel: React.FC = () => {
   const getPathType = (path: string) => {
     const hasExtension = /\.[a-zA-Z0-9]+$/.test(path);
     return hasExtension ? 'File' : 'Directory';
+  };
+
+  const handleTestEndpoint = async () => {
+    if (!llmConfig.ollama_base_url.trim()) {
+      setEndpointTestResult({
+        success: false,
+        accessible: false,
+        base_url: '',
+        message: 'Please enter a valid endpoint URL',
+        error_message: 'Empty URL'
+      });
+      return;
+    }
+
+    setIsTestingEndpoint(true);
+    setEndpointTestResult(null);
+
+    try {
+      const result = await configAPI.testOllamaEndpoint({
+        base_url: llmConfig.ollama_base_url.trim()
+      });
+      setEndpointTestResult(result);
+    } catch (error) {
+      console.error('Failed to test endpoint:', error);
+      setEndpointTestResult({
+        success: false,
+        accessible: false,
+        base_url: llmConfig.ollama_base_url.trim(),
+        message: 'Failed to test endpoint',
+        error_message: error instanceof Error ? error.message : 'Unknown error'
+      });
+    } finally {
+      setIsTestingEndpoint(false);
+    }
   };
 
   const handleStartIndexing = () => {
@@ -729,6 +768,70 @@ const SettingsPanel: React.FC = () => {
                       </Typography>
                     </Grid>
                   </Grid>
+                </Box>
+
+                {/* Ollama Server Configuration */}
+                <Box>
+                  <Typography variant="subtitle1" gutterBottom sx={{ fontWeight: 'bold' }}>
+                    Ollama Server Configuration
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" paragraph>
+                    Configure the Ollama server endpoint. You can use a local server (localhost) or a remote server on your network.
+                  </Typography>
+
+                  <Grid container spacing={3} alignItems="center">
+                    <Grid item xs={12} sm={8}>
+                      <TextField
+                        fullWidth
+                        label="Ollama Server URL"
+                        value={llmConfig.ollama_base_url}
+                        onChange={(e) => handleLLMConfigChange('ollama_base_url', e.target.value)}
+                        placeholder="http://192.168.50.188:11434"
+                        helperText="Format: http://hostname:port or http://ip:port (default: http://localhost:11434)"
+                      />
+                    </Grid>
+                    <Grid item xs={12} sm={4}>
+                      <Button
+                        fullWidth
+                        variant="outlined"
+                        onClick={handleTestEndpoint}
+                        disabled={isTestingEndpoint || !llmConfig.ollama_base_url.trim()}
+                        startIcon={isTestingEndpoint ? <CircularProgress size={16} /> : undefined}
+                      >
+                        {isTestingEndpoint ? 'Testing...' : 'Test Connection'}
+                      </Button>
+                    </Grid>
+                  </Grid>
+
+                  {/* Endpoint Test Results */}
+                  {endpointTestResult && (
+                    <Box sx={{ mt: 2 }}>
+                      <Alert
+                        severity={endpointTestResult.success && endpointTestResult.accessible ? 'success' : 'error'}
+                        sx={{ mb: 1 }}
+                      >
+                        <Typography variant="body2" sx={{ fontWeight: 'bold' }}>
+                          {endpointTestResult.message}
+                        </Typography>
+                        {endpointTestResult.accessible && (
+                          <Box sx={{ mt: 1 }}>
+                            <Typography variant="caption" display="block">
+                              Response time: {endpointTestResult.response_time_ms}ms
+                            </Typography>
+                            <Typography variant="caption" display="block">
+                              Models found: {endpointTestResult.models_count} total
+                              ({endpointTestResult.vision_models_count} vision, {endpointTestResult.embedding_models_count} embedding)
+                            </Typography>
+                          </Box>
+                        )}
+                        {endpointTestResult.error_message && (
+                          <Typography variant="caption" display="block" sx={{ mt: 1, color: 'error.main' }}>
+                            Error: {endpointTestResult.error_message}
+                          </Typography>
+                        )}
+                      </Alert>
+                    </Box>
+                  )}
                 </Box>
 
                 {/* Model Settings */}

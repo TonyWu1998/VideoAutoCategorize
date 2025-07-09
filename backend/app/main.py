@@ -72,6 +72,12 @@ async def startup_event():
         migration_service = PromptMigrationService()
         await migration_service.setup_default_prompts()
 
+        # Initialize and load persistent configuration
+        from app.services.config_manager import ConfigManager
+        config_manager = ConfigManager()
+        await config_manager.load_and_apply_config()
+        logger.info(f"Loaded persistent LLM configuration: {settings.OLLAMA_BASE_URL}")
+
         logger.info("Application startup completed successfully")
         
     except Exception as e:

@@ -21,8 +21,15 @@ from app.config import settings
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Initialize indexing service
-indexing_service = IndexingService()
+# Initialize indexing service lazily to avoid early LLM service initialization
+indexing_service = None
+
+def get_indexing_service():
+    """Get the indexing service instance, creating it if needed."""
+    global indexing_service
+    if indexing_service is None:
+        indexing_service = IndexingService()
+    return indexing_service
 
 
 @router.post("/start", response_model=BaseResponse)
@@ -41,10 +48,10 @@ async def start_indexing(request: IndexingRequest, background_tasks: BackgroundT
             raise HTTPException(status_code=400, detail="At least one path must be specified")
         
         # Start indexing in background
-        job_id = await indexing_service.start_indexing(request)
+        job_id = await get_indexing_service().start_indexing(request)
         
         # Add background task to monitor progress
-        background_tasks.add_task(indexing_service.monitor_indexing_job, job_id)
+        background_tasks.add_task(get_indexing_service().monitor_indexing_job, job_id)
         
         logger.info(f"Indexing started with job ID: {job_id}")
         
@@ -67,7 +74,7 @@ async def get_indexing_status():
     indexing jobs.
     """
     try:
-        status = await indexing_service.get_status()
+        status = await get_indexing_service().get_status()
         return status
         
     except Exception as e:
@@ -90,7 +97,7 @@ async def control_indexing(request: IndexingControlRequest):
                 detail=f"Invalid action. Must be one of: {valid_actions}"
             )
         
-        result = await indexing_service.control_indexing(request.action, request.job_id)
+        result = await get_indexing_service().control_indexing(request.action, request.job_id)
         
         return BaseResponse(
             success=True,
@@ -114,7 +121,7 @@ async def get_indexing_history(
     performance metrics and results.
     """
     try:
-        history = await indexing_service.get_history(limit, offset)
+        history = await get_indexing_service().get_history(limit, offset)
         return history
         
     except Exception as e:
@@ -131,7 +138,7 @@ async def get_indexing_stats():
     statistical information about indexing operations.
     """
     try:
-        stats = await indexing_service.get_stats()
+        stats = await get_indexing_service().get_stats()
         return stats
         
     except Exception as e:
@@ -157,10 +164,10 @@ async def reindex_files(
         if len(file_ids) > 100:
             raise HTTPException(status_code=400, detail="Maximum 100 files can be reindexed at once")
         
-        job_id = await indexing_service.reindex_files(file_ids)
-        
+        job_id = await get_indexing_service().reindex_files(file_ids)
+
         # Add background task to monitor progress
-        background_tasks.add_task(indexing_service.monitor_indexing_job, job_id)
+        background_tasks.add_task(get_indexing_service().monitor_indexing_job, job_id)
         
         return BaseResponse(
             success=True,
@@ -181,7 +188,7 @@ async def get_file_watcher_status():
     monitored for new files.
     """
     try:
-        status = await indexing_service.get_watcher_status()
+        status = await get_indexing_service().get_watcher_status()
         return status
         
     except Exception as e:
@@ -201,7 +208,7 @@ async def start_file_watcher(paths: List[str]):
         if not paths:
             raise HTTPException(status_code=400, detail="At least one path must be specified")
         
-        await indexing_service.start_file_watcher(paths)
+        await get_indexing_service().start_file_watcher(paths)
         
         return BaseResponse(
             success=True,
@@ -221,7 +228,7 @@ async def stop_file_watcher():
     Disables automatic indexing of new files.
     """
     try:
-        await indexing_service.stop_file_watcher()
+        await get_indexing_service().stop_file_watcher()
         
         return BaseResponse(
             success=True,
@@ -242,7 +249,7 @@ async def clear_index():
     and cannot be undone. Use with caution.
     """
     try:
-        await indexing_service.clear_index()
+        await get_indexing_service().clear_index()
         
         return BaseResponse(
             success=True,
@@ -263,7 +270,7 @@ async def validate_index():
     potential issues with the index.
     """
     try:
-        validation_results = await indexing_service.validate_index()
+        validation_results = await get_indexing_service().validate_index()
         
         return {
             "validation_results": validation_results,
